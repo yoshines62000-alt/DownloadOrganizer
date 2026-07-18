@@ -59,6 +59,11 @@ DEFAULT_CATEGORIES = {
 OLD_FILE_THRESHOLD_DAYS = 90
 OLD_FILES_TARGET = "A verifier"
 
+# Motifs toujours exclus, independamment de la configuration utilisateur.
+# Non modifiables depuis la GUI : evite qu'un champ "Motifs" vide par megarde
+# ne desactive la protection de fichiers systeme/temporaires.
+ALWAYS_EXCLUDED_PATTERNS = ["*.crdownload", "*.part", "*.tmp", "desktop.ini", "*.download"]
+
 DEFAULT_CONFIG = {
     "downloads_dir": str(Path.home() / "Downloads"),
     "base_target_dir": str(Path.home()),
@@ -66,7 +71,7 @@ DEFAULT_CONFIG = {
     "exclusions": {
         "extensions": [],       # ex: [".tmp", ".crdownload"]
         "filenames": [],        # ex: ["ne_pas_toucher.pdf"]
-        "patterns": ["*.crdownload", "*.part", "*.tmp", "desktop.ini", "*.download"],
+        "patterns": [],         # motifs personnalises additionnels (ex: "*.bak")
     },
 }
 
@@ -147,11 +152,17 @@ class DownloadOrganizer:
 
     def _is_excluded(self, path: Path) -> bool:
         excl = self.config["exclusions"]
-        if path.suffix.lower() in [e.lower() for e in excl.get("extensions", [])]:
+        suffix = path.suffix.lower()
+        normalized_extensions = {
+            e.lower() if e.startswith(".") else f".{e.lower()}"
+            for e in excl.get("extensions", []) if e.strip()
+        }
+        if suffix in normalized_extensions:
             return True
         if path.name in excl.get("filenames", []):
             return True
-        for pattern in excl.get("patterns", []):
+        all_patterns = list(excl.get("patterns", [])) + ALWAYS_EXCLUDED_PATTERNS
+        for pattern in all_patterns:
             if fnmatch.fnmatch(path.name.lower(), pattern.lower()):
                 return True
         return False
@@ -178,27 +189,35 @@ class DownloadOrganizer:
             return base / OLD_FILES_TARGET
         return base / DEFAULT_CATEGORIES[category]["target"]
 
-    def _unique_destination(self, target_dir: Path, filename: str) -> Path:
-        dest = target_dir / filename
-        if not dest.exists():
-            return dest
+    def _unique_destination(self, target_dir: Path, filename: str, reserved: set) -> Path:
+        """Trouve une destination libre, en tenant aussi compte des destinations
+        deja attribuees a d'autres fichiers du meme lot (pas encore deplaces sur
+        le disque) via `reserved`."""
         stem, suffix = Path(filename).stem, Path(filename).suffix
+        candidate = target_dir / filename
         counter = 1
-        while True:
+        while candidate.exists() or candidate in reserved:
             candidate = target_dir / f"{stem} ({counter}){suffix}"
-            if not candidate.exists():
-                return candidate
             counter += 1
+        reserved.add(candidate)
+        return candidate
 
     # -- planification -------------------------------------------------
 
     def plan(self) -> OrganizeResult:
-        downloads_dir = Path(self.config["downloads_dir"])
+        downloads_dir_str = self.config["downloads_dir"].strip() if self.config["downloads_dir"] else ""
         result = OrganizeResult()
 
+        if not downloads_dir_str:
+            result.errors.append((Path(downloads_dir_str), "Le dossier Telechargements n'est pas renseigne."))
+            return result
+
+        downloads_dir = Path(downloads_dir_str)
         if not downloads_dir.exists():
             result.errors.append((downloads_dir, "Le dossier Telechargements est introuvable."))
             return result
+
+        reserved_destinations = set()
 
         for entry in sorted(downloads_dir.iterdir()):
             if entry.is_dir():
@@ -220,7 +239,7 @@ class DownloadOrganizer:
                 reason = f"extension {entry.suffix.lower()}"
 
             target_dir = self._target_dir_for_category(category)
-            destination = self._unique_destination(target_dir, entry.name)
+            destination = self._unique_destination(target_dir, entry.name, reserved_destinations)
             result.moves.append(PlannedMove(source=entry, destination=destination, category=category, reason=reason))
 
         return result
@@ -262,7 +281,7 @@ class DownloadOrganizer:
 
     def undo_last_batch(self) -> dict:
         history = load_history()
-        real_batches = [b for b in history if not b.get("simulated")]
+        real_batches = [b for b in history if not b.get("simulated") and not b.get("undone")]
         if not real_batches:
             return {"undone": [], "message": "Aucun lot a annuler."}
 
@@ -275,19 +294,19 @@ class DownloadOrganizer:
             src = Path(entry["destination"])
             dst = Path(entry["source"])
             try:
-                if src.exists():
+                if not src.exists():
+                    errors.append((str(src), "fichier introuvable (deja deplace ou renomme)"))
+                elif dst.exists():
+                    errors.append((str(dst), "un fichier existe deja a cet emplacement, annulation ignoree pour ce fichier"))
+                else:
                     dst.parent.mkdir(parents=True, exist_ok=True)
                     shutil.move(str(src), str(dst))
                     undone.append(entry)
-                else:
-                    errors.append((str(src), "fichier introuvable (deja deplace ou renomme)"))
             except OSError as exc:
                 errors.append((str(src), str(exc)))
 
         # marque le lot comme annule pour ne pas le reproposer
-        for b in history:
-            if b is last_batch:
-                b["undone"] = True
+        last_batch["undone"] = True
         save_history(history)
 
         return {"undone": undone, "errors": errors}
@@ -329,8 +348,10 @@ def main(argv: Optional[list] = None) -> int:
 
     config = load_config()
     if args.downloads_dir:
+        # Remplacement ponctuel pour cette execution uniquement : non persiste,
+        # pour eviter qu'un test rapide en ligne de commande n'ecrase
+        # durablement le dossier configure dans la GUI.
         config["downloads_dir"] = args.downloads_dir
-        save_config(config)
 
     organizer = DownloadOrganizer(config)
 

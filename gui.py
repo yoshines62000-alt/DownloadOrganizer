@@ -42,7 +42,7 @@ class OrganizerGUI(tk.Tk):
         ttk.Button(top, text="Parcourir...", command=self._browse_base_target).grid(row=1, column=2, pady=(6, 0))
 
         ttk.Label(top, text="Anciennete (jours) pour 'A verifier' :").grid(row=2, column=0, sticky="w", pady=(6, 0))
-        self.age_var = tk.IntVar(value=self.config_data.get("old_file_threshold_days", 90))
+        self.age_var = tk.StringVar(value=str(self.config_data.get("old_file_threshold_days", 90)))
         ttk.Spinbox(top, from_=1, to=3650, textvariable=self.age_var, width=8).grid(row=2, column=1, sticky="w", padx=5, pady=(6, 0))
 
         top.columnconfigure(1, weight=1)
@@ -59,7 +59,10 @@ class OrganizerGUI(tk.Tk):
         self.excl_names_var = tk.StringVar(value=", ".join(self.config_data["exclusions"].get("filenames", [])))
         ttk.Entry(excl_frame, textvariable=self.excl_names_var, width=40).grid(row=1, column=1, sticky="we", padx=5, pady=(4, 0))
 
-        ttk.Label(excl_frame, text="Motifs (glob, ex: *.crdownload, *.part)").grid(row=2, column=0, sticky="w", pady=(4, 0))
+        ttk.Label(
+            excl_frame,
+            text="Motifs additionnels (glob, ex: *.bak) - s'ajoutent aux protections integrees (*.crdownload, *.part, *.tmp, desktop.ini, *.download), qui restent toujours actives",
+        ).grid(row=2, column=0, sticky="w", pady=(4, 0))
         self.excl_patterns_var = tk.StringVar(value=", ".join(self.config_data["exclusions"].get("patterns", [])))
         ttk.Entry(excl_frame, textvariable=self.excl_patterns_var, width=40).grid(row=2, column=1, sticky="we", padx=5, pady=(4, 0))
 
@@ -132,13 +135,25 @@ class OrganizerGUI(tk.Tk):
         if path:
             self.base_target_var.set(path)
 
-    def _collect_config(self) -> dict:
+    def _collect_config(self):
+        """Retourne la config a jour, ou None (et affiche une erreur) si un champ est invalide."""
         def split_csv(value: str) -> list:
             return [v.strip() for v in value.split(",") if v.strip()]
 
+        try:
+            age_days = int(self.age_var.get().strip())
+            if age_days < 1:
+                raise ValueError
+        except ValueError:
+            messagebox.showerror(
+                "Valeur invalide",
+                "Le champ 'Anciennete (jours)' doit contenir un nombre entier positif.",
+            )
+            return None
+
         self.config_data["downloads_dir"] = self.downloads_var.get().strip()
         self.config_data["base_target_dir"] = self.base_target_var.get().strip()
-        self.config_data["old_file_threshold_days"] = int(self.age_var.get())
+        self.config_data["old_file_threshold_days"] = age_days
         self.config_data["exclusions"] = {
             "extensions": split_csv(self.excl_ext_var.get()),
             "filenames": split_csv(self.excl_names_var.get()),
@@ -148,6 +163,8 @@ class OrganizerGUI(tk.Tk):
 
     def _save_config(self):
         config = self._collect_config()
+        if config is None:
+            return
         save_config(config)
         self.organizer = DownloadOrganizer(config)
         self.status_var.set("Configuration enregistree.")
@@ -160,6 +177,8 @@ class OrganizerGUI(tk.Tk):
 
     def _simulate(self):
         config = self._collect_config()
+        if config is None:
+            return
         save_config(config)
         self.organizer = DownloadOrganizer(config)
 
@@ -177,6 +196,8 @@ class OrganizerGUI(tk.Tk):
 
     def _run_real(self):
         config = self._collect_config()
+        if config is None:
+            return
         save_config(config)
         self.organizer = DownloadOrganizer(config)
 
