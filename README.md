@@ -22,6 +22,16 @@ rapide](#lancement-rapide-double-clic) pour créer un raccourci Bureau.
 
 ## Fonctionnalités
 
+- **Reconnaissance par signature de fichier (magic bytes)**, en plus de la
+  simple extension : l'outil lit les premiers octets de chaque fichier pour
+  vérifier son type réel. Deux usages concrets :
+  - un fichier sans extension (ou avec une extension inconnue) dont le
+    contenu est reconnu (PDF, image, archive, exécutable) est quand même
+    classé correctement ;
+  - un fichier dont l'**extension ne correspond pas au contenu réel**
+    (ex. un `.exe` renommé en `.pdf` — technique classique pour déguiser un
+    exécutable) est isolé dans `A verifier` avec une raison explicite, au
+    lieu d'être classé aveuglément sur la seule foi de son extension.
 - **Détection de doublons par hash de contenu (SHA-256)**, pas seulement par
   nom de fichier : un même document téléchargé deux fois par le navigateur
   (`rapport.pdf` et `rapport (1).pdf`, contenu identique) est reconnu comme

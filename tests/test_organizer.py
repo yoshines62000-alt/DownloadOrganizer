@@ -224,6 +224,60 @@ class OrganizerTestCase(unittest.TestCase):
         self.assertEqual(len(keepers), 1)
         self.assertEqual(len(duplicates), 2)
 
+    # -- reconnaissance par signature de fichier (magic bytes) --------------
+
+    def _write_bytes(self, relative_path: str, content: bytes):
+        path = self.downloads / relative_path
+        path.write_bytes(content)
+        return path
+
+    def test_exe_renamed_as_pdf_is_flagged_for_review(self):
+        # En-tete MZ (executable Windows) mais extension .pdf : incoherence.
+        self._write_bytes("facture.pdf", b"MZ" + b"\x00" * 62)
+        o = self._organizer()
+        result = o.plan()
+        self.assertEqual(len(result.moves), 1)
+        self.assertEqual(result.moves[0].category, "A verifier")
+        self.assertIn("incoherente", result.moves[0].reason)
+        self.assertIn("Installateurs", result.moves[0].reason)
+
+    def test_unknown_extension_recognized_by_signature(self):
+        self._write_bytes("mystere.download2", b"%PDF-1.7\n%content")
+        o = self._organizer()
+        result = o.plan()
+        self.assertEqual(len(result.moves), 1)
+        self.assertEqual(result.moves[0].category, "PDF")
+        self.assertIn("signature", result.moves[0].reason)
+
+    def test_matching_extension_and_signature_is_not_flagged(self):
+        self._write_bytes("photo.jpg", b"\xff\xd8\xff\xe0" + b"\x00" * 60)
+        o = self._organizer()
+        result = o.plan()
+        self.assertEqual(len(result.moves), 1)
+        self.assertEqual(result.moves[0].category, "Images")
+        self.assertNotIn("incoherente", result.moves[0].reason)
+
+    def test_apk_zip_signature_is_not_falsely_flagged(self):
+        # Un .apk est techniquement un conteneur ZIP : ce n'est pas une
+        # incoherence a signaler, c'est le format normal de cet installateur.
+        self._write_bytes("appli.apk", b"PK\x03\x04" + b"\x00" * 60)
+        o = self._organizer()
+        result = o.plan()
+        self.assertEqual(len(result.moves), 1)
+        self.assertEqual(result.moves[0].category, "Installateurs")
+        self.assertNotIn("incoherente", result.moves[0].reason)
+
+    def test_docx_zip_signature_not_misfiled_as_archive(self):
+        # Un .docx est un ZIP en interne mais n'est pas une categorie geree ;
+        # il ne doit pas etre reclasse en "Archives" pour autant.
+        old_time = time.time() - 200 * 86400
+        f = self._write_bytes("document.docx", b"PK\x03\x04" + b"\x00" * 60)
+        os.utime(f, (old_time, old_time))
+        o = self._organizer()
+        result = o.plan()
+        self.assertEqual(len(result.moves), 1)
+        self.assertEqual(result.moves[0].category, "A verifier")
+
     # -- exclusions ----------------------------------------------------------
 
     def test_extension_exclusion_without_leading_dot_still_works(self):

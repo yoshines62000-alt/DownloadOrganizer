@@ -91,6 +91,77 @@ HASH_CHUNK_SIZE = 1024 * 1024
 # ne desactive la protection de fichiers systeme/temporaires.
 ALWAYS_EXCLUDED_PATTERNS = ["*.crdownload", "*.part", "*.tmp", "desktop.ini", "*.download"]
 
+# ---------------------------------------------------------------------------
+# Reconnaissance par signature de fichier (magic bytes)
+# ---------------------------------------------------------------------------
+# Contrairement a un tri par simple extension, ceci lit les premiers octets
+# du fichier pour identifier son type reel. Deux usages :
+#  1. classer correctement un fichier sans extension ou a l'extension
+#     inconnue, si sa signature correspond a un type reconnu ;
+#  2. detecter un fichier dont l'extension NE correspond PAS a son contenu
+#     reel (ex: un .exe renomme en .pdf) et le signaler pour verification
+#     manuelle plutot que de le classer aveuglement par son extension.
+SIGNATURE_READ_SIZE = 16
+
+# Extensions "conteneur ZIP" legitimes qui ne sont pas des archives au sens
+# ou l'utilisateur l'entend (docx/xlsx/apk sont techniquement des fichiers
+# ZIP). Pour ces extensions, on ne se fie pas a une signature ZIP generique
+# pour reclassifier le fichier en "Archives" : on laisse le comportement
+# habituel (extension non reconnue -> ancien/exclu) plutot que de mal ranger
+# un document bureautique.
+ZIP_LIKE_NON_ARCHIVE_EXTENSIONS = {
+    ".docx", ".xlsx", ".pptx", ".odt", ".ods", ".odp",
+    ".epub", ".jar", ".apk", ".aar", ".xpi", ".vsdx",
+}
+
+# Extensions deja rangees dans DEFAULT_CATEGORIES qui sont, elles aussi,
+# techniquement des conteneurs ZIP (apk, msix) : leur signature detectee sera
+# "Archives" alors que leur categorie voulue est "Installateurs". Ce n'est
+# pas une incoherence a signaler, c'est le format normal de ces installateurs.
+EXPECTED_SIGNATURE_OVERRIDES = {
+    (".apk", "Archives"): "Installateurs",
+    (".msix", "Archives"): "Installateurs",
+}
+
+
+def _detect_file_signature(path: Path, cache: Optional[dict] = None) -> Optional[str]:
+    """Identifie le type reel d'un fichier via ses premiers octets (magic
+    bytes), independamment de son extension. Renvoie une cle de
+    DEFAULT_CATEGORIES ou None si le type n'est pas reconnu (auquel cas le
+    fichier suit le classement normal par extension/anciennete)."""
+    if cache is not None and path in cache:
+        return cache[path]
+    try:
+        with open(path, "rb") as f:
+            header = f.read(SIGNATURE_READ_SIZE)
+    except OSError:
+        header = b""
+
+    result = None
+    if header.startswith(b"%PDF-"):
+        result = "PDF"
+    elif (
+        header.startswith(b"\x89PNG\r\n\x1a\n")
+        or header.startswith(b"\xff\xd8\xff")
+        or header.startswith((b"GIF87a", b"GIF89a"))
+        or (header[:4] == b"RIFF" and header[8:12] == b"WEBP")
+        or header.startswith(b"BM")
+    ):
+        result = "Images"
+    elif (
+        header.startswith(b"Rar!\x1a\x07")
+        or header.startswith(b"7z\xbc\xaf\x27\x1c")
+        or header.startswith(b"\x1f\x8b")
+        or header.startswith((b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08"))
+    ):
+        result = "Archives"
+    elif header.startswith(b"MZ"):
+        result = "Installateurs"
+
+    if cache is not None:
+        cache[path] = result
+    return result
+
 DEFAULT_CONFIG = {
     "downloads_dir": str(Path.home() / "Downloads"),
     "base_target_dir": str(Path.home()),
@@ -331,6 +402,7 @@ class DownloadOrganizer:
 
         reserved_destinations = set()
         hash_cache: dict = {}
+        signature_cache: dict = {}
         candidates = []  # list[(Path entry, str category, str reason)]
 
         for entry in sorted(downloads_dir.iterdir()):
@@ -341,17 +413,40 @@ class DownloadOrganizer:
                 result.excluded.append(entry)
                 continue
 
-            category = self._category_for(entry)
+            ext_category = self._category_for(entry)
+            suffix = entry.suffix.lower()
+            # Lecture de 16 octets seulement : cout negligeable, calcule pour
+            # chaque fichier (utilise ensuite pour detecter les incoherences
+            # extension/contenu, ou classer les extensions inconnues).
+            signature_category = _detect_file_signature(entry, signature_cache)
+            override = EXPECTED_SIGNATURE_OVERRIDES.get((suffix, signature_category))
+            if override is not None:
+                signature_category = override
+
+            category = ext_category
             reason = ""
-            if category is None:
-                if self._is_old(entry):
-                    category = OLD_FILES_TARGET
-                    reason = f"fichier de plus de {self.config.get('old_file_threshold_days', OLD_FILE_THRESHOLD_DAYS)} jours, type non reconnu"
-                else:
-                    result.excluded.append(entry)
-                    continue
+
+            if ext_category is not None and signature_category is not None and signature_category != ext_category:
+                # L'extension et le contenu reel du fichier ne correspondent pas
+                # (ex: un .exe renomme en .pdf) : on ne fait pas confiance a
+                # l'extension aveuglement, on isole le fichier pour verification.
+                category = OLD_FILES_TARGET
+                reason = (
+                    f"extension '{suffix}' incoherente avec le contenu reel du fichier "
+                    f"(signature detectee : {signature_category}) - verification manuelle recommandee"
+                )
+            elif ext_category is not None:
+                reason = f"extension {suffix}"
+            elif signature_category is not None and suffix not in ZIP_LIKE_NON_ARCHIVE_EXTENSIONS:
+                # Extension absente/inconnue, mais le contenu est reconnu par sa signature.
+                category = signature_category
+                reason = f"signature de fichier reconnue comme {signature_category} (extension '{suffix or '(aucune)'}' non reconnue)"
+            elif self._is_old(entry):
+                category = OLD_FILES_TARGET
+                reason = f"fichier de plus de {self.config.get('old_file_threshold_days', OLD_FILE_THRESHOLD_DAYS)} jours, type non reconnu"
             else:
-                reason = f"extension {entry.suffix.lower()}"
+                result.excluded.append(entry)
+                continue
 
             candidates.append((entry, category, reason))
 
