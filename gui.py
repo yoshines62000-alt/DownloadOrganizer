@@ -347,7 +347,8 @@ class OrganizerGUI(tk.Tk):
         reports_dir.mkdir(parents=True, exist_ok=True)
         filename = f"rapport-{time.strftime('%Y%m%d-%H%M%S')}.html"
         path = reports_dir / filename
-        export_html_report(self.last_real_batch, path)
+        base_dir = Path(self.base_target_var.get().strip()) if self.base_target_var.get().strip() else None
+        export_html_report(self.last_real_batch, path, base_dir=base_dir)
         self.status_var.set(f"Rapport exporte : {path}")
         if messagebox.askyesno("Rapport exporte", f"Rapport enregistre dans :\n{path}\n\nL'ouvrir maintenant ?"):
             os.startfile(str(path))

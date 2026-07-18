@@ -166,6 +166,30 @@ class OrganizerTestCase(unittest.TestCase):
         self.assertFalse(result.moves)
         self.assertIn("introuvable", result.errors[0][1])
 
+    def test_downloads_dir_pointing_at_drive_root_is_rejected(self):
+        drive_root = Path(self.tmp.anchor)  # ex: "C:\\"
+        o = self._organizer(downloads_dir=str(drive_root))
+        result = o.plan()
+        self.assertTrue(result.errors)
+        self.assertFalse(result.moves)
+        self.assertIn("dossier systeme", result.errors[0][1])
+
+    def test_base_target_dir_pointing_at_windows_system_dir_is_rejected(self):
+        system_root = os.environ.get("SystemRoot") or os.environ.get("windir")
+        if not system_root or not Path(system_root).exists():
+            self.skipTest("SystemRoot/windir non disponible sur cette machine")
+        self._write("a.pdf")
+        o = self._organizer(base_target_dir=system_root)
+        result = o.plan()
+        self.assertTrue(result.errors)
+        self.assertFalse(result.moves)
+        self.assertIn("dossier systeme", result.errors[0][1])
+
+    def test_normal_target_dir_is_not_flagged_as_sensitive(self):
+        # Garde-fou contre les faux positifs : le dossier de test normal
+        # (sous un dossier temporaire) ne doit jamais etre rejete a tort.
+        self.assertIsNone(org.DownloadOrganizer._is_sensitive_system_path(self.target))
+
     def test_unreadable_downloads_dir_is_reported_not_crashed(self):
         # Simule un dossier existant mais illisible (permissions refusees,
         # lecteur reseau instable) : plan() doit degrader gracieusement
@@ -476,6 +500,21 @@ class OrganizerTestCase(unittest.TestCase):
         self.assertNotIn("<script>bad.pdf", content)
         self.assertIn("&lt;script&gt;bad.pdf", content)
         self.assertIn("&amp;", content)
+
+    def test_export_html_report_hides_username_via_relative_paths(self):
+        # Le rapport est concu pour etre partage : un chemin de destination
+        # absolu (C:\Users\<nom_utilisateur>\...) reveler ait le nom du
+        # compte Windows sans que ce soit utile au rapport.
+        self._write("a.pdf")
+        o = self._organizer()
+        result = o.plan()
+        batch = o.execute(result, simulate=False)
+
+        report_path = self.tmp / "rapport_relatif.html"
+        org.export_html_report(batch, report_path, base_dir=self.target)
+        content = report_path.read_text(encoding="utf-8")
+        self.assertNotIn(str(self.target), content)
+        self.assertIn("Documents", content)  # chemin relatif toujours lisible
 
 
 if __name__ == "__main__":

@@ -386,6 +386,37 @@ class DownloadOrganizer:
         reserved.add(candidate)
         return candidate
 
+    @staticmethod
+    def _is_sensitive_system_path(path: Path) -> Optional[str]:
+        """Detecte si un chemin correspond a la racine d'un lecteur ou a un
+        dossier systeme sensible (Windows, Program Files...). Protege contre
+        une configuration corrompue ou modifiee manuellement (config.json)
+        qui pointerait le dossier Telechargements ou la destination racine
+        vers un tel emplacement : sans ce garde-fou, l'outil deplacerait
+        silencieusement des fichiers systeme reconnus par leur extension
+        (.exe, .zip, etc.). Renvoie une description du dossier sensible
+        detecte, ou None si le chemin est sans danger apparent."""
+        try:
+            resolved = path.resolve()
+        except OSError:
+            resolved = path
+
+        if resolved.parent == resolved:
+            return f"la racine du lecteur ({resolved})"
+
+        for env_var in ("SystemRoot", "windir", "ProgramFiles", "ProgramFiles(x86)", "ProgramData"):
+            value = os.environ.get(env_var)
+            if not value:
+                continue
+            try:
+                sensitive_dir = Path(value).resolve()
+            except OSError:
+                continue
+            if resolved == sensitive_dir or sensitive_dir in resolved.parents:
+                return f"un dossier systeme ({sensitive_dir})"
+
+        return None
+
     # -- planification -------------------------------------------------
 
     def plan(self) -> OrganizeResult:
@@ -402,6 +433,15 @@ class DownloadOrganizer:
             result.errors.append((downloads_dir, "Le dossier Telechargements est introuvable."))
             return result
 
+        sensitive = self._is_sensitive_system_path(downloads_dir)
+        if sensitive:
+            result.errors.append((
+                downloads_dir,
+                f"Ce dossier correspond a {sensitive} : par securite, l'outil "
+                "refuse de trier un dossier systeme. Verifiez la configuration.",
+            ))
+            return result
+
         if not base_target_str:
             result.errors.append((Path("."), "Le dossier de destination racine n'est pas renseigne."))
             return result
@@ -409,6 +449,15 @@ class DownloadOrganizer:
         base_target_dir = Path(base_target_str)
         if not base_target_dir.exists():
             result.errors.append((base_target_dir, "Le dossier de destination racine est introuvable."))
+            return result
+
+        sensitive = self._is_sensitive_system_path(base_target_dir)
+        if sensitive:
+            result.errors.append((
+                base_target_dir,
+                f"Ce dossier correspond a {sensitive} : par securite, l'outil "
+                "refuse d'y deplacer des fichiers. Verifiez la configuration.",
+            ))
             return result
 
         reserved_destinations = set()
@@ -639,10 +688,16 @@ class DownloadOrganizer:
 # Rapport de session (transparence : explique chaque decision prise)
 # ---------------------------------------------------------------------------
 
-def export_html_report(batch: dict, path: Path) -> None:
+def export_html_report(batch: dict, path: Path, base_dir: Optional[Path] = None) -> None:
     """Ecrit un rapport HTML autonome listant chaque fichier traite lors d'un
     lot reel, avec sa categorie, sa destination et la raison du classement,
-    pour que l'utilisateur puisse verifier/auditer ce que l'outil a fait."""
+    pour que l'utilisateur puisse verifier/auditer ce que l'outil a fait.
+
+    Si `base_dir` est fourni, les chemins de destination sont affiches
+    relatifs a ce dossier plutot qu'en chemin absolu complet : ce rapport est
+    concu pour etre partage/exporte, et un chemin absolu Windows revele le
+    nom du compte utilisateur (ex: C:\\Users\\<nom>\\...) sans que ce soit
+    utile a la comprehension du rapport."""
     rows = []
     for m in batch["moves"]:
         status_label = {
@@ -652,11 +707,17 @@ def export_html_report(batch: dict, path: Path) -> None:
             "annulation_impossible": "Annulation impossible",
             "planifie": "Simule",
         }.get(m.get("status"), m.get("status", ""))
+        destination_display = m.get("destination", "")
+        if base_dir is not None and destination_display:
+            try:
+                destination_display = str(Path(destination_display).relative_to(base_dir))
+            except ValueError:
+                pass  # hors de base_dir (rare) : on garde le chemin complet
         rows.append(
             "<tr>"
             f"<td>{_html_escape(Path(m['source']).name)}</td>"
             f"<td>{_html_escape(m.get('category', ''))}</td>"
-            f"<td>{_html_escape(m.get('destination', ''))}</td>"
+            f"<td>{_html_escape(destination_display)}</td>"
             f"<td>{_html_escape(m.get('reason', ''))}</td>"
             f"<td>{_html_escape(status_label)}</td>"
             f"<td>{_html_escape(m.get('error', ''))}</td>"
