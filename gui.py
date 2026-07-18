@@ -18,7 +18,18 @@ from organizer import (
     export_html_report,
     APP_DIR,
     DUPLICATES_TARGET,
+    DEFAULT_WATCH_INTERVAL_SECONDS,
 )
+
+
+def _stat_signature(path: Path):
+    """(taille, date de modification) d'un fichier, utilise par le mode Veille
+    pour detecter si un fichier est encore en cours d'ecriture (telechargement)."""
+    try:
+        st = path.stat()
+        return (st.st_size, st.st_mtime)
+    except OSError:
+        return (None, None)
 
 
 class OrganizerGUI(tk.Tk):
@@ -33,9 +44,17 @@ class OrganizerGUI(tk.Tk):
         self.last_plan_result = None
         self.last_real_batch = None
 
+        # Etat du mode Veille : jamais active automatiquement au demarrage,
+        # meme si un intervalle est enregistre - l'utilisateur doit l'activer
+        # explicitement a chaque session, pour eviter toute surprise.
+        self.watch_active = False
+        self._watch_after_id = None
+        self._watch_last_signature = None
+
         self._build_widgets()
         self._refresh_history_view()
         self._bind_shortcuts()
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
 
     # ------------------------------------------------------------------
     # Construction de l'UI
@@ -81,6 +100,35 @@ class OrganizerGUI(tk.Tk):
         ttk.Entry(excl_frame, textvariable=self.excl_patterns_var, width=40).grid(row=2, column=1, sticky="we", padx=5, pady=(4, 0))
 
         excl_frame.columnconfigure(1, weight=1)
+
+        # Mode Veille (surveillance optionnelle)
+        watch_frame = ttk.LabelFrame(self, text="Mode Veille (optionnel)", padding=10)
+        watch_frame.pack(fill="x", padx=10, pady=(0, 10))
+
+        ttk.Label(watch_frame, text="Verifier le dossier toutes les").grid(row=0, column=0, sticky="w")
+        self.watch_interval_var = tk.StringVar(
+            value=str(self.config_data.get("watch_interval_seconds", DEFAULT_WATCH_INTERVAL_SECONDS))
+        )
+        ttk.Spinbox(watch_frame, from_=5, to=3600, textvariable=self.watch_interval_var, width=6).grid(
+            row=0, column=1, sticky="w", padx=5
+        )
+        ttk.Label(watch_frame, text="secondes").grid(row=0, column=2, sticky="w")
+        self.watch_btn = ttk.Button(watch_frame, text="Activer la veille", command=self._toggle_watch)
+        self.watch_btn.grid(row=0, column=3, sticky="w", padx=(20, 0))
+        self.watch_status_var = tk.StringVar(value="Veille inactive.")
+        ttk.Label(watch_frame, textvariable=self.watch_status_var, foreground="#555").grid(
+            row=1, column=0, columnspan=4, sticky="w", pady=(4, 0)
+        )
+        ttk.Label(
+            watch_frame,
+            text=(
+                "La veille surveille le dossier en arriere-plan mais ne deplace jamais rien "
+                "automatiquement : une confirmation groupee vous est toujours demandee des que "
+                "de nouveaux fichiers sont detectes et stables (plus aucun telechargement en cours)."
+            ),
+            wraplength=760,
+            foreground="#555",
+        ).grid(row=2, column=0, columnspan=4, sticky="w", pady=(2, 0))
 
         # Boutons d'action
         btn_frame = ttk.Frame(self, padding=(10, 0))
@@ -286,6 +334,130 @@ class OrganizerGUI(tk.Tk):
         self.status_var.set(f"Rapport exporte : {path}")
         if messagebox.askyesno("Rapport exporte", f"Rapport enregistre dans :\n{path}\n\nL'ouvrir maintenant ?"):
             os.startfile(str(path))
+
+    # -- Mode Veille (surveillance optionnelle, sans deplacement automatique) --
+
+    def _toggle_watch(self):
+        if self.watch_active:
+            self._stop_watch("Veille desactivee.")
+        else:
+            self._start_watch()
+
+    def _start_watch(self):
+        config = self._collect_config()
+        if config is None:
+            return
+        try:
+            interval = int(self.watch_interval_var.get().strip())
+            if interval < 5:
+                raise ValueError
+        except ValueError:
+            messagebox.showerror("Valeur invalide", "L'intervalle de veille doit etre un nombre entier d'au moins 5 secondes.")
+            return
+        config["watch_interval_seconds"] = interval
+        save_config(config)
+        self.organizer = DownloadOrganizer(config)
+
+        self.watch_active = True
+        self._watch_last_signature = None
+        self.watch_btn.configure(text="Desactiver la veille")
+        self.watch_status_var.set("Veille active : premiere verification en cours...")
+        self._watch_tick()
+
+    def _stop_watch(self, status_message: str = "Veille desactivee."):
+        self.watch_active = False
+        if self._watch_after_id is not None:
+            try:
+                self.after_cancel(self._watch_after_id)
+            except (ValueError, tk.TclError):
+                pass
+            self._watch_after_id = None
+        self.watch_btn.configure(text="Activer la veille")
+        self.watch_status_var.set(status_message)
+
+    def _watch_tick(self):
+        if not self.watch_active:
+            return
+
+        try:
+            result = self.organizer.plan()
+        except OSError as exc:
+            self._stop_watch(f"Veille interrompue : {exc}")
+            return
+
+        if result.errors:
+            self._stop_watch(
+                "Veille interrompue : " + "; ".join(f"{p}: {e}" for p, e in result.errors)
+            )
+            return
+
+        # "Signature" du lot en attente (fichier + taille + date de modification) :
+        # si elle est identique a celle observee au tour precedent, aucun fichier
+        # n'a change depuis -> les telechargements sont consideres termines et on
+        # propose le rangement. Sinon on attend encore (fichiers en cours d'ecriture).
+        signature = tuple(sorted(
+            (str(m.source), *(_stat_signature(m.source)))
+            for m in result.moves
+        ))
+
+        if result.moves and signature == self._watch_last_signature:
+            self._watch_last_signature = None
+            self._prompt_watch_batch(result)
+        else:
+            self._watch_last_signature = signature
+            if result.moves:
+                self.watch_status_var.set(
+                    f"Veille active : {len(result.moves)} fichier(s) detecte(s), "
+                    "stabilisation en cours (attente de fin de telechargement)..."
+                )
+            else:
+                self.watch_status_var.set("Veille active : aucun nouveau fichier a ranger pour le moment.")
+
+        if self.watch_active:
+            try:
+                interval = int(self.watch_interval_var.get().strip())
+                if interval < 5:
+                    raise ValueError
+            except ValueError:
+                # Champ modifie en cours de route avec une valeur invalide : on
+                # garde la derniere cadence connue plutot que d'interrompre la veille.
+                interval = self.organizer.config.get("watch_interval_seconds", DEFAULT_WATCH_INTERVAL_SECONDS)
+            self._watch_after_id = self.after(interval * 1000, self._watch_tick)
+
+    def _prompt_watch_batch(self, result):
+        self._fill_preview(result)
+        duplicates = [m for m in result.moves if m.category == DUPLICATES_TARGET]
+        dup_line = f"Dont {len(duplicates)} doublon(s) de contenu identique.\n" if duplicates else ""
+        confirm = messagebox.askyesno(
+            "Veille : nouveaux fichiers detectes",
+            f"{len(result.moves)} fichier(s) sont prets a etre ranges (aucune suppression).\n"
+            f"{dup_line}"
+            "Ranger maintenant ?",
+        )
+        if confirm:
+            batch = self.organizer.execute(result, simulate=False)
+            errors = [m for m in batch["moves"] if m["status"] == "erreur"]
+            moved = [m for m in batch["moves"] if m["status"] == "deplace"]
+            self.last_real_batch = batch
+            self.export_btn.configure(state="normal")
+            self.watch_status_var.set(
+                f"Veille active : {len(moved)} fichier(s) deplace(s), {len(errors)} erreur(s). "
+                "Surveillance en cours..."
+            )
+            if errors:
+                messagebox.showwarning(
+                    "Terminee avec des erreurs",
+                    "\n".join(f"{e['source']}: {e.get('error', '')}" for e in errors),
+                )
+            self._refresh_history_view()
+        else:
+            self.watch_status_var.set(
+                "Veille active : rangement ignore pour ce lot. Il sera reproposé si le dossier change."
+            )
+
+    def _on_close(self):
+        self._stop_watch()
+        self.destroy()
 
     def _undo(self):
         confirm = messagebox.askyesno(

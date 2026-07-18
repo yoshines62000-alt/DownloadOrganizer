@@ -162,10 +162,13 @@ def _detect_file_signature(path: Path, cache: Optional[dict] = None) -> Optional
         cache[path] = result
     return result
 
+DEFAULT_WATCH_INTERVAL_SECONDS = 20
+
 DEFAULT_CONFIG = {
     "downloads_dir": str(Path.home() / "Downloads"),
     "base_target_dir": str(Path.home()),
     "old_file_threshold_days": OLD_FILE_THRESHOLD_DAYS,
+    "watch_interval_seconds": DEFAULT_WATCH_INTERVAL_SECONDS,
     "exclusions": {
         "extensions": [],       # ex: [".tmp", ".crdownload"]
         "filenames": [],        # ex: ["ne_pas_toucher.pdf"]
@@ -222,7 +225,7 @@ def load_config() -> dict:
                 raise ValueError("config.json ne contient pas un objet JSON valide")
 
             merged = copy.deepcopy(DEFAULT_CONFIG)
-            for key in ("downloads_dir", "base_target_dir", "old_file_threshold_days"):
+            for key in ("downloads_dir", "base_target_dir", "old_file_threshold_days", "watch_interval_seconds"):
                 if key in data and isinstance(data[key], type(DEFAULT_CONFIG[key])):
                     merged[key] = data[key]
             if _is_valid_exclusions(data.get("exclusions")):

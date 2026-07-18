@@ -22,6 +22,16 @@ rapide](#lancement-rapide-double-clic) pour créer un raccourci Bureau.
 
 ## Fonctionnalités
 
+- **Mode Veille (optionnel)** : surveille le dossier Téléchargements en
+  arrière-plan à intervalle configurable, mais **ne déplace jamais rien
+  automatiquement**. Dès que de nouveaux fichiers sont détectés et *stables*
+  (taille et date de modification inchangées depuis la dernière vérification
+  — donc plus aucun téléchargement en cours), une confirmation groupée vous
+  est proposée, exactement comme un rangement manuel. Contrairement à des
+  outils comme Hazel ou DropIt qui déplacent les fichiers instantanément et
+  silencieusement dès leur détection, vous gardez toujours la main. La veille
+  n'est jamais activée automatiquement au démarrage — c'est un choix
+  explicite à chaque session.
 - **Reconnaissance par signature de fichier (magic bytes)**, en plus de la
   simple extension : l'outil lit les premiers octets de chaque fichier pour
   vérifier son type réel. Deux usages concrets :
@@ -124,7 +134,10 @@ L'interface permet de :
 6. Cliquer sur **Ouvrir le dossier de destination** pour vérifier le résultat
    dans l'Explorateur, ou sur **Exporter le rapport (HTML)** pour garder une
    trace détaillée d'un rangement réel.
-7. Consulter l'onglet **Historique** pour voir les lots précédents.
+7. Activer le **Mode Veille** pour une surveillance périodique du dossier,
+   avec confirmation groupée avant chaque rangement (voir
+   [Fonctionnalités](#fonctionnalités)).
+8. Consulter l'onglet **Historique** pour voir les lots précédents.
 
 ### Ligne de commande
 
