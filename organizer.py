@@ -17,9 +17,13 @@ Utilisable en ligne de commande (CLI) ou via l'interface graphique (GUI).
 
 from __future__ import annotations
 
+import copy
 import json
+import logging
+import os
 import shutil
 import sys
+import tempfile
 import time
 import fnmatch
 from dataclasses import dataclass, field
@@ -34,6 +38,19 @@ from typing import Optional
 APP_DIR = Path.home() / ".download_organizer"
 HISTORY_FILE = APP_DIR / "history.json"
 CONFIG_FILE = APP_DIR / "config.json"
+LOG_FILE = APP_DIR / "app.log"
+
+logger = logging.getLogger("download_organizer")
+
+
+def _ensure_logging_configured() -> None:
+    if logger.handlers:
+        return
+    APP_DIR.mkdir(parents=True, exist_ok=True)
+    handler = logging.FileHandler(LOG_FILE, encoding="utf-8")
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
 
 DEFAULT_CATEGORIES = {
     "PDF": {
@@ -76,25 +93,70 @@ DEFAULT_CONFIG = {
 }
 
 
+def _atomic_write_json(path: Path, data) -> None:
+    """Ecrit un fichier JSON de maniere atomique (fichier temporaire + remplacement),
+    pour eviter un fichier tronque/corrompu en cas de crash ou coupure pendant l'ecriture."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), prefix=path.stem + ".", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+        os.replace(tmp_name, path)
+    except Exception:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
+
+
+def _quarantine_corrupted_file(path: Path) -> None:
+    """Renomme un fichier illisible/corrompu au lieu de le perdre silencieusement,
+    pour permettre a l'utilisateur de recuperer ses donnees manuellement si besoin."""
+    try:
+        backup = path.with_suffix(path.suffix + f".corrompu-{int(time.time())}.bak")
+        path.replace(backup)
+        _ensure_logging_configured()
+        logger.warning("Fichier corrompu mis en quarantaine : %s -> %s", path, backup)
+    except OSError:
+        pass
+
+
+def _is_valid_exclusions(value) -> bool:
+    if not isinstance(value, dict):
+        return False
+    for key in ("extensions", "filenames", "patterns"):
+        items = value.get(key, [])
+        if not isinstance(items, list) or not all(isinstance(i, str) for i in items):
+            return False
+    return True
+
+
 def load_config() -> dict:
     APP_DIR.mkdir(parents=True, exist_ok=True)
     if CONFIG_FILE.exists():
         try:
             data = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
-            merged = json.loads(json.dumps(DEFAULT_CONFIG))  # deep copy
-            merged.update({k: v for k, v in data.items() if k != "exclusions"})
-            if "exclusions" in data:
+            if not isinstance(data, dict):
+                raise ValueError("config.json ne contient pas un objet JSON valide")
+
+            merged = copy.deepcopy(DEFAULT_CONFIG)
+            for key in ("downloads_dir", "base_target_dir", "old_file_threshold_days"):
+                if key in data and isinstance(data[key], type(DEFAULT_CONFIG[key])):
+                    merged[key] = data[key]
+            if _is_valid_exclusions(data.get("exclusions")):
                 merged["exclusions"].update(data["exclusions"])
             return merged
-        except (json.JSONDecodeError, OSError):
-            pass
+        except (json.JSONDecodeError, OSError, ValueError, TypeError, AttributeError):
+            _ensure_logging_configured()
+            logger.warning("config.json invalide ou corrompu, restauration des valeurs par defaut.", exc_info=True)
+            _quarantine_corrupted_file(CONFIG_FILE)
     save_config(DEFAULT_CONFIG)
-    return json.loads(json.dumps(DEFAULT_CONFIG))
+    return copy.deepcopy(DEFAULT_CONFIG)
 
 
 def save_config(config: dict) -> None:
-    APP_DIR.mkdir(parents=True, exist_ok=True)
-    CONFIG_FILE.write_text(json.dumps(config, indent=2, ensure_ascii=False), encoding="utf-8")
+    _atomic_write_json(CONFIG_FILE, config)
 
 
 # ---------------------------------------------------------------------------
@@ -104,15 +166,20 @@ def save_config(config: dict) -> None:
 def load_history() -> list:
     if HISTORY_FILE.exists():
         try:
-            return json.loads(HISTORY_FILE.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
+            data = json.loads(HISTORY_FILE.read_text(encoding="utf-8"))
+            if not isinstance(data, list):
+                raise ValueError("history.json ne contient pas une liste JSON valide")
+            return data
+        except (json.JSONDecodeError, OSError, ValueError):
+            _ensure_logging_configured()
+            logger.warning("history.json invalide ou corrompu, historique reinitialise.", exc_info=True)
+            _quarantine_corrupted_file(HISTORY_FILE)
             return []
     return []
 
 
 def save_history(history: list) -> None:
-    APP_DIR.mkdir(parents=True, exist_ok=True)
-    HISTORY_FILE.write_text(json.dumps(history, indent=2, ensure_ascii=False), encoding="utf-8")
+    _atomic_write_json(HISTORY_FILE, history)
 
 
 def append_batch_to_history(batch: dict) -> None:
@@ -135,9 +202,10 @@ class PlannedMove:
 
 @dataclass
 class OrganizeResult:
-    moves: list = field(default_factory=list)      # list[PlannedMove] effectues ou simules
-    excluded: list = field(default_factory=list)    # list[Path] ignores
-    errors: list = field(default_factory=list)      # list[tuple[Path, str]]
+    moves: list = field(default_factory=list)        # list[PlannedMove] effectues ou simules
+    excluded: list = field(default_factory=list)      # list[Path] ignores (exclusion ou non categorise)
+    errors: list = field(default_factory=list)        # list[tuple[Path, str]]
+    skipped_dirs: list = field(default_factory=list)  # list[Path] sous-dossiers non parcourus
 
 
 # ---------------------------------------------------------------------------
@@ -155,15 +223,18 @@ class DownloadOrganizer:
         suffix = path.suffix.lower()
         normalized_extensions = {
             e.lower() if e.startswith(".") else f".{e.lower()}"
-            for e in excl.get("extensions", []) if e.strip()
+            for e in excl.get("extensions", []) if isinstance(e, str) and e.strip()
         }
         if suffix in normalized_extensions:
             return True
-        if path.name in excl.get("filenames", []):
+        normalized_filenames = {
+            f.lower() for f in excl.get("filenames", []) if isinstance(f, str)
+        }
+        if path.name.lower() in normalized_filenames:
             return True
         all_patterns = list(excl.get("patterns", [])) + ALWAYS_EXCLUDED_PATTERNS
         for pattern in all_patterns:
-            if fnmatch.fnmatch(path.name.lower(), pattern.lower()):
+            if isinstance(pattern, str) and fnmatch.fnmatch(path.name.lower(), pattern.lower()):
                 return True
         return False
 
@@ -206,10 +277,11 @@ class DownloadOrganizer:
 
     def plan(self) -> OrganizeResult:
         downloads_dir_str = self.config["downloads_dir"].strip() if self.config["downloads_dir"] else ""
+        base_target_str = self.config["base_target_dir"].strip() if self.config["base_target_dir"] else ""
         result = OrganizeResult()
 
         if not downloads_dir_str:
-            result.errors.append((Path(downloads_dir_str), "Le dossier Telechargements n'est pas renseigne."))
+            result.errors.append((Path("."), "Le dossier Telechargements n'est pas renseigne."))
             return result
 
         downloads_dir = Path(downloads_dir_str)
@@ -217,10 +289,20 @@ class DownloadOrganizer:
             result.errors.append((downloads_dir, "Le dossier Telechargements est introuvable."))
             return result
 
+        if not base_target_str:
+            result.errors.append((Path("."), "Le dossier de destination racine n'est pas renseigne."))
+            return result
+
+        base_target_dir = Path(base_target_str)
+        if not base_target_dir.exists():
+            result.errors.append((base_target_dir, "Le dossier de destination racine est introuvable."))
+            return result
+
         reserved_destinations = set()
 
         for entry in sorted(downloads_dir.iterdir()):
             if entry.is_dir():
+                result.skipped_dirs.append(entry)
                 continue
             if self._is_excluded(entry):
                 result.excluded.append(entry)
@@ -270,6 +352,19 @@ class DownloadOrganizer:
                 except OSError as exc:
                     entry["status"] = "erreur"
                     entry["error"] = str(exc)
+                    _ensure_logging_configured()
+                    logger.error("Echec du deplacement %s -> %s : %s", move.source, move.destination, exc)
+                    # Sur un deplacement inter-disque, shutil.move copie puis supprime la
+                    # source ; si la copie echoue en cours de route, un fichier partiel/
+                    # tronque peut rester a destination alors que la source existe encore.
+                    # On le nettoie pour ne pas laisser un fichier corrompu se faire passer
+                    # pour le fichier complet.
+                    if move.source.exists() and move.destination.exists():
+                        try:
+                            move.destination.unlink()
+                            entry["error"] += " (fichier partiel nettoye a la destination)"
+                        except OSError:
+                            pass
             batch["moves"].append(entry)
 
         if not simulate:
@@ -288,6 +383,7 @@ class DownloadOrganizer:
         last_batch = real_batches[-1]
         undone = []
         errors = []
+        pending = False  # au moins une entree "deplace" restante non resolue
         for entry in last_batch["moves"]:
             if entry.get("status") != "deplace":
                 continue
@@ -296,20 +392,90 @@ class DownloadOrganizer:
             try:
                 if not src.exists():
                     errors.append((str(src), "fichier introuvable (deja deplace ou renomme)"))
+                    entry["status"] = "annulation_impossible"
                 elif dst.exists():
                     errors.append((str(dst), "un fichier existe deja a cet emplacement, annulation ignoree pour ce fichier"))
+                    pending = True  # peut etre retente plus tard si le conflit se resout
                 else:
                     dst.parent.mkdir(parents=True, exist_ok=True)
                     shutil.move(str(src), str(dst))
+                    entry["status"] = "annule"
                     undone.append(entry)
             except OSError as exc:
                 errors.append((str(src), str(exc)))
+                pending = True
 
-        # marque le lot comme annule pour ne pas le reproposer
-        last_batch["undone"] = True
+        # Le lot n'est marque comme definitivement annule que si toutes ses
+        # entrees ont ete traitees avec succes ou jugees irrecuperables ; s'il
+        # reste des conflits potentiellement resolubles (fichier en place a la
+        # destination d'origine), on le laisse disponible pour un nouvel essai.
+        if not pending:
+            last_batch["undone"] = True
         save_history(history)
 
         return {"undone": undone, "errors": errors}
+
+
+# ---------------------------------------------------------------------------
+# Rapport de session (transparence : explique chaque decision prise)
+# ---------------------------------------------------------------------------
+
+def export_html_report(batch: dict, path: Path) -> None:
+    """Ecrit un rapport HTML autonome listant chaque fichier traite lors d'un
+    lot reel, avec sa categorie, sa destination et la raison du classement,
+    pour que l'utilisateur puisse verifier/auditer ce que l'outil a fait."""
+    rows = []
+    for m in batch["moves"]:
+        status_label = {
+            "deplace": "Deplace",
+            "erreur": "Erreur",
+            "annule": "Annule (undo)",
+            "annulation_impossible": "Annulation impossible",
+            "planifie": "Simule",
+        }.get(m.get("status"), m.get("status", ""))
+        rows.append(
+            "<tr>"
+            f"<td>{_html_escape(Path(m['source']).name)}</td>"
+            f"<td>{_html_escape(m.get('category', ''))}</td>"
+            f"<td>{_html_escape(m.get('destination', ''))}</td>"
+            f"<td>{_html_escape(m.get('reason', ''))}</td>"
+            f"<td>{_html_escape(status_label)}</td>"
+            f"<td>{_html_escape(m.get('error', ''))}</td>"
+            "</tr>"
+        )
+
+    html = f"""<!doctype html>
+<html lang="fr"><head><meta charset="utf-8">
+<title>Rapport de rangement - {_html_escape(batch.get('timestamp', ''))}</title>
+<style>
+body {{ font-family: sans-serif; margin: 2rem; }}
+table {{ border-collapse: collapse; width: 100%; }}
+th, td {{ border: 1px solid #ccc; padding: 6px 10px; text-align: left; font-size: 0.9rem; }}
+th {{ background: #f0f0f0; }}
+</style></head>
+<body>
+<h1>Rapport de rangement</h1>
+<p>Date : {_html_escape(batch.get('timestamp', ''))}</p>
+<p>Nombre de fichiers traites : {len(batch['moves'])}</p>
+<table>
+<thead><tr><th>Fichier</th><th>Categorie</th><th>Destination</th><th>Raison</th><th>Statut</th><th>Detail erreur</th></tr></thead>
+<tbody>
+{''.join(rows)}
+</tbody>
+</table>
+</body></html>
+"""
+    path.write_text(html, encoding="utf-8")
+
+
+def _html_escape(value: str) -> str:
+    return (
+        str(value)
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -329,6 +495,8 @@ def _print_plan(result: OrganizeResult) -> None:
 
     if result.excluded:
         print(f"\n{len(result.excluded)} fichier(s) ignore(s) (exclusion ou non categorise, non ancien).")
+    if result.skipped_dirs:
+        print(f"{len(result.skipped_dirs)} sous-dossier(s) non parcouru(s) (non geres par cet outil).")
 
 
 def main(argv: Optional[list] = None) -> int:
@@ -342,6 +510,10 @@ def main(argv: Optional[list] = None) -> int:
     args = parser.parse_args(argv)
 
     if args.gui:
+        # gui.py fait "from organizer import ...", ce qui re-executerait ce
+        # fichier une seconde fois sous un nom de module distinct si on ne
+        # reutilise pas l'entree __main__ deja chargee.
+        sys.modules.setdefault("organizer", sys.modules["__main__"])
         from gui import run_gui
         run_gui()
         return 0

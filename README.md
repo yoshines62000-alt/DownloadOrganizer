@@ -34,7 +34,19 @@ rapide](#lancement-rapide-double-clic) pour créer un raccourci Bureau.
 - **Aucune suppression automatique** : les déplacements ne remplacent jamais
   un fichier déjà présent à la destination (ni à l'aller, ni lors d'une
   annulation) — en cas de conflit, ce fichier est simplement laissé de côté
-  et signalé.
+  et signalé. Cette garantie est vérifiée par une suite de tests automatisés
+  (voir [Tests](#tests)), pas seulement affirmée.
+- **Rapport de session exportable (HTML)** : après un rangement réel, un
+  bouton permet d'exporter un rapport détaillant chaque fichier traité, sa
+  destination et la raison du classement — pour vérifier ou auditer ce que
+  l'outil a fait.
+- **Robustesse face aux configurations corrompues** : un `config.json` ou
+  `history.json` invalide est mis en quarantaine (renommé, pas perdu) plutôt
+  que de faire planter l'application.
+- **Journal d'activité** (`~/.download_organizer/app.log`) pour diagnostiquer
+  un problème.
+- **Raccourcis clavier** : `Ctrl+S` (enregistrer), `F5` (simuler),
+  `Ctrl+Entrée` (ranger), `Ctrl+Z` (annuler).
 
 ## Installation
 
@@ -89,7 +101,10 @@ L'interface permet de :
 4. Cliquer sur **Simuler** pour prévisualiser, ou **Ranger les fichiers** pour
    exécuter réellement les déplacements.
 5. Cliquer sur **Annuler le dernier rangement** pour tout remettre en place.
-6. Consulter l'onglet **Historique** pour voir les lots précédents.
+6. Cliquer sur **Ouvrir le dossier de destination** pour vérifier le résultat
+   dans l'Explorateur, ou sur **Exporter le rapport (HTML)** pour garder une
+   trace détaillée d'un rangement réel.
+7. Consulter l'onglet **Historique** pour voir les lots précédents.
 
 ### Ligne de commande
 
@@ -112,15 +127,30 @@ python organizer.py --downloads-dir "D:\Autre\Telechargements" --run
 
 La configuration (dossiers, seuil d'ancienneté, exclusions) est stockée dans
 `~/.download_organizer/config.json` et peut être modifiée directement ou via
-l'interface graphique.
+l'interface graphique. L'historique des lots réels est dans
+`~/.download_organizer/history.json`, les rapports exportés dans
+`~/.download_organizer/reports/`, et le journal d'activité dans
+`~/.download_organizer/app.log`.
+
+## Tests
+
+Une suite de tests automatisés couvre en priorité la garantie centrale de
+l'outil (aucun écrasement de fichier, à l'aller comme lors d'une annulation),
+ainsi que les cas limites (dossiers manquants/vides, configuration corrompue,
+exclusions mal formées, collisions de destination).
+
+```bash
+python -m unittest tests.test_organizer -v
+```
 
 ## Structure du projet
 
 ```
-organizer.py   # logique métier + CLI
-gui.py         # interface graphique Tkinter
-Lancer.vbs     # raccourci de lancement double-clic (sans console)
-Lancer.bat     # raccourci de lancement double-clic (avec console, pour debug)
+organizer.py         # logique métier + CLI
+gui.py                # interface graphique Tkinter
+tests/test_organizer.py  # tests automatises
+Lancer.vbs            # raccourci de lancement double-clic (sans console)
+Lancer.bat            # raccourci de lancement double-clic (avec console, pour debug)
 README.md
 ```
 

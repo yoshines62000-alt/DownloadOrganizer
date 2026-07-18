@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import csv
+import io
+import os
+import time
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 from pathlib import Path
 
-from organizer import DownloadOrganizer, load_config, save_config, load_history
+from organizer import DownloadOrganizer, load_config, save_config, load_history, export_html_report, APP_DIR
 
 
 class OrganizerGUI(tk.Tk):
@@ -19,9 +23,11 @@ class OrganizerGUI(tk.Tk):
         self.config_data = load_config()
         self.organizer = DownloadOrganizer(self.config_data)
         self.last_plan_result = None
+        self.last_real_batch = None
 
         self._build_widgets()
         self._refresh_history_view()
+        self._bind_shortcuts()
 
     # ------------------------------------------------------------------
     # Construction de l'UI
@@ -72,11 +78,14 @@ class OrganizerGUI(tk.Tk):
         btn_frame = ttk.Frame(self, padding=(10, 0))
         btn_frame.pack(fill="x")
 
-        ttk.Button(btn_frame, text="Enregistrer la configuration", command=self._save_config).pack(side="left")
-        ttk.Button(btn_frame, text="Simuler (previsualiser)", command=self._simulate).pack(side="left", padx=6)
-        self.run_btn = ttk.Button(btn_frame, text="Ranger les fichiers", command=self._run_real)
+        ttk.Button(btn_frame, text="Enregistrer la configuration (Ctrl+S)", command=self._save_config).pack(side="left")
+        ttk.Button(btn_frame, text="Simuler (F5)", command=self._simulate).pack(side="left", padx=6)
+        self.run_btn = ttk.Button(btn_frame, text="Ranger les fichiers (Ctrl+Entree)", command=self._run_real)
         self.run_btn.pack(side="left")
-        ttk.Button(btn_frame, text="Annuler le dernier rangement", command=self._undo).pack(side="left", padx=6)
+        ttk.Button(btn_frame, text="Annuler le dernier rangement (Ctrl+Z)", command=self._undo).pack(side="left", padx=6)
+        ttk.Button(btn_frame, text="Ouvrir le dossier de destination", command=self._open_target_dir).pack(side="left", padx=6)
+        self.export_btn = ttk.Button(btn_frame, text="Exporter le rapport (HTML)", command=self._export_report, state="disabled")
+        self.export_btn.pack(side="left")
 
         # Notebook: apercu + historique
         notebook = ttk.Notebook(self)
@@ -138,7 +147,11 @@ class OrganizerGUI(tk.Tk):
     def _collect_config(self):
         """Retourne la config a jour, ou None (et affiche une erreur) si un champ est invalide."""
         def split_csv(value: str) -> list:
-            return [v.strip() for v in value.split(",") if v.strip()]
+            # Utilise le module csv pour permettre des valeurs entre guillemets
+            # contenant elles-memes une virgule (ex: "a,b.txt").
+            reader = csv.reader(io.StringIO(value), skipinitialspace=True)
+            items = next(reader, [])
+            return [v.strip() for v in items if v.strip()]
 
         try:
             age_days = int(self.age_var.get().strip())
@@ -179,7 +192,9 @@ class OrganizerGUI(tk.Tk):
         config = self._collect_config()
         if config is None:
             return
-        save_config(config)
+        # Intentionnellement non persiste : "Simuler" sert a tester des valeurs
+        # sans les enregistrer definitivement. Utilisez "Enregistrer la
+        # configuration" ou "Ranger les fichiers" pour persister.
         self.organizer = DownloadOrganizer(config)
 
         result = self.organizer.plan()
@@ -189,9 +204,10 @@ class OrganizerGUI(tk.Tk):
 
         self._fill_preview(result)
         self.organizer.execute(result, simulate=True)
+        extra = f", {len(result.skipped_dirs)} sous-dossier(s) non parcouru(s)" if result.skipped_dirs else ""
         self.status_var.set(
             f"Simulation : {len(result.moves)} fichier(s) seraient deplaces, "
-            f"{len(result.excluded)} ignore(s). Aucun fichier n'a ete modifie."
+            f"{len(result.excluded)} ignore(s){extra}. Aucun fichier n'a ete modifie."
         )
 
     def _run_real(self):
@@ -224,6 +240,8 @@ class OrganizerGUI(tk.Tk):
         batch = self.organizer.execute(result, simulate=False)
         errors = [m for m in batch["moves"] if m["status"] == "erreur"]
         moved = [m for m in batch["moves"] if m["status"] == "deplace"]
+        self.last_real_batch = batch
+        self.export_btn.configure(state="normal")
         self.status_var.set(f"{len(moved)} fichier(s) deplace(s), {len(errors)} erreur(s).")
         if errors:
             messagebox.showwarning(
@@ -231,6 +249,26 @@ class OrganizerGUI(tk.Tk):
                 "\n".join(f"{e['source']}: {e.get('error', '')}" for e in errors),
             )
         self._refresh_history_view()
+
+    def _open_target_dir(self):
+        target = self.base_target_var.get().strip()
+        if not target or not Path(target).exists():
+            messagebox.showerror("Dossier introuvable", "Le dossier de destination racine est introuvable.")
+            return
+        os.startfile(target)  # nosec - ouverture Explorateur Windows d'un dossier local choisi par l'utilisateur
+
+    def _export_report(self):
+        if not self.last_real_batch:
+            messagebox.showinfo("Aucun rapport", "Effectuez d'abord un rangement reel pour generer un rapport.")
+            return
+        reports_dir = APP_DIR / "reports"
+        reports_dir.mkdir(parents=True, exist_ok=True)
+        filename = f"rapport-{time.strftime('%Y%m%d-%H%M%S')}.html"
+        path = reports_dir / filename
+        export_html_report(self.last_real_batch, path)
+        self.status_var.set(f"Rapport exporte : {path}")
+        if messagebox.askyesno("Rapport exporte", f"Rapport enregistre dans :\n{path}\n\nL'ouvrir maintenant ?"):
+            os.startfile(str(path))
 
     def _undo(self):
         confirm = messagebox.askyesno(
@@ -258,12 +296,25 @@ class OrganizerGUI(tk.Tk):
         self.history_tree.delete(*self.history_tree.get_children())
         history = load_history()
         for batch in reversed(history):
-            mode = "Simulation" if batch.get("simulated") else ("Annule" if batch.get("undone") else "Reel")
+            if batch.get("simulated"):
+                mode = "Simulation"
+            elif batch.get("undone"):
+                mode = "Annule"
+            elif any(m.get("status") == "annule" for m in batch["moves"]):
+                mode = "Partiellement annule"
+            else:
+                mode = "Reel"
             moved = [m for m in batch["moves"] if m.get("status") in ("deplace", "planifie")]
             detail = ", ".join(Path(m["source"]).name for m in moved[:5])
             if len(moved) > 5:
                 detail += f", ... (+{len(moved) - 5})"
             self.history_tree.insert("", "end", values=(batch["timestamp"], mode, len(moved), detail))
+
+    def _bind_shortcuts(self):
+        self.bind_all("<Control-s>", lambda e: self._save_config())
+        self.bind_all("<F5>", lambda e: self._simulate())
+        self.bind_all("<Control-Return>", lambda e: self._run_real())
+        self.bind_all("<Control-z>", lambda e: self._undo())
 
 
 def run_gui():
