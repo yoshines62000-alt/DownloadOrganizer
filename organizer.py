@@ -29,7 +29,7 @@ import tempfile
 import time
 from collections import defaultdict
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePath
 from typing import Optional
 
 
@@ -209,6 +209,22 @@ def _quarantine_corrupted_file(path: Path) -> None:
         pass
 
 
+def _is_safe_relative_target(target: str) -> bool:
+    """Rejette tout dossier cible qui n'est pas un sous-chemin relatif sur.
+    Un target absolu (lecteur ou racine) ou contenant '..' pourrait, une
+    fois combine avec base_target_dir via l'operateur `/` de pathlib,
+    produire un chemin totalement hors de l'arborescence de destination
+    prevue (voir _is_within_base pour le garde-fou complementaire applique
+    au chemin final resolu, qui attrape aussi les cas qu'is_absolute() ne
+    detecte pas sous Windows, comme un chemin "enracine" sans lecteur)."""
+    path = PurePath(target)
+    if path.is_absolute() or path.drive:
+        return False
+    if ".." in path.parts:
+        return False
+    return True
+
+
 def _is_valid_custom_categories(value) -> bool:
     if not isinstance(value, list):
         return False
@@ -218,6 +234,8 @@ def _is_valid_custom_categories(value) -> bool:
         if not isinstance(item.get("name"), str) or not item["name"].strip():
             return False
         if not isinstance(item.get("target"), str) or not item["target"].strip():
+            return False
+        if not _is_safe_relative_target(item["target"]):
             return False
         extensions = item.get("extensions")
         if not isinstance(extensions, list) or not extensions or not all(isinstance(e, str) for e in extensions):
@@ -511,6 +529,23 @@ class DownloadOrganizer:
 
         return None
 
+    @staticmethod
+    def _is_within_base(candidate: Path, base: Path) -> bool:
+        """Verifie que `candidate` reste bien a l'interieur de `base` une
+        fois les deux chemins resolus. Complement necessaire a
+        _is_safe_relative_target : celle-ci rejette les cas evidents
+        (target absolu, '..') a la saisie, mais pathlib.Path.__truediv__
+        peut aussi produire un chemin hors de `base` a partir d'un target
+        "enracine" sans lecteur (ex: '/Windows' ou '\\Windows'), qu'
+        is_absolute() ne detecte pas sous Windows - d'ou cette verification
+        sur le resultat final plutot que sur la chaine d'entree seule."""
+        try:
+            candidate_resolved = candidate.resolve()
+            base_resolved = base.resolve()
+        except OSError:
+            candidate_resolved, base_resolved = candidate, base
+        return candidate_resolved == base_resolved or base_resolved in candidate_resolved.parents
+
     # -- planification -------------------------------------------------
 
     def plan(self) -> OrganizeResult:
@@ -553,6 +588,29 @@ class DownloadOrganizer:
                 "refuse d'y deplacer des fichiers. Verifiez la configuration.",
             ))
             return result
+
+        # Meme garde-fou pour le dossier cible de chaque categorie (integree
+        # ou personnalisee) : une categorie personnalisee mal configuree (ou
+        # importee depuis un config.json externe) pourrait sinon rediriger
+        # des fichiers hors de base_target_dir, voire vers un dossier
+        # systeme, sans jamais passer par les deux verifications ci-dessus.
+        for category_name in self.categories:
+            candidate_dir = self._target_dir_for_category(category_name)
+            if not self._is_within_base(candidate_dir, base_target_dir):
+                result.errors.append((
+                    candidate_dir,
+                    f"Le dossier cible de la categorie '{category_name}' sort du dossier de "
+                    "destination racine : par securite, l'outil refuse cette configuration.",
+                ))
+                return result
+            category_sensitive = self._is_sensitive_system_path(candidate_dir)
+            if category_sensitive:
+                result.errors.append((
+                    candidate_dir,
+                    f"Le dossier cible de la categorie '{category_name}' correspond a "
+                    f"{category_sensitive} : par securite, l'outil refuse d'y deplacer des fichiers.",
+                ))
+                return result
 
         reserved_destinations = set()
         hash_cache: dict = {}

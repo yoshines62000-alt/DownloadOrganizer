@@ -542,6 +542,79 @@ class OrganizerTestCase(unittest.TestCase):
         imported = org.import_config(malicious_path)
         self.assertEqual(imported["custom_categories"], org.DEFAULT_CONFIG["custom_categories"])
 
+    def test_custom_category_with_absolute_windows_target_is_rejected_at_validation(self):
+        # Trouve lors d'un audit : Path(base) / 'C:/Windows/System32' produit
+        # silencieusement 'C:/Windows/System32' (l'operateur / de pathlib
+        # jette la partie gauche face a un chemin absolu) - le garde-fou
+        # doit intercepter ceci a la validation, avant meme d'atteindre plan().
+        config = copy.deepcopy(org.DEFAULT_CONFIG)
+        config["custom_categories"] = [
+            {"name": "Backup", "extensions": [".bak"], "target": r"C:\Windows\System32"},
+        ]
+        self.assertFalse(org._is_valid_custom_categories(config["custom_categories"]))
+
+    def test_custom_category_with_dot_dot_target_is_rejected_at_validation(self):
+        self.assertFalse(org._is_valid_custom_categories([
+            {"name": "Evil", "extensions": [".evil"], "target": "../../ailleurs"},
+        ]))
+
+    def test_custom_category_with_rooted_but_driveless_target_is_caught_at_plan_time(self):
+        # '/Windows' (ou '\\Windows') n'est PAS detecte par Path.is_absolute()
+        # sous Windows (chemin "enracine" sans lecteur), mais produit quand
+        # meme un chemin hors de base_target_dir une fois combine via `/` -
+        # d'ou le garde-fou complementaire _is_within_base verifie dans plan().
+        config = copy.deepcopy(self.config)
+        config["custom_categories"] = [
+            {"name": "Evil", "extensions": [".evil"], "target": "/Windows"},
+        ]
+        o = self._organizer(custom_categories=config["custom_categories"])
+        self._write("fichier.evil")
+        result = o.plan()
+        self.assertEqual(result.moves, [])
+        self.assertTrue(result.errors)
+        self.assertIn("sort du dossier de destination racine", result.errors[0][1])
+
+    def test_custom_category_targeting_a_sensitive_system_path_is_rejected_at_plan_time(self):
+        windows_dir = os.environ.get("SystemRoot") or os.environ.get("windir")
+        if not windows_dir:
+            self.skipTest("SystemRoot/windir non defini dans cet environnement")
+        # Un target relatif "normal" en apparence (une seule remontee ".."
+        # rejetee par la validation ; ici on simule plutot un base_target_dir
+        # place directement dans un sous-dossier systeme pour verifier le
+        # deuxieme filet de securite independamment du premier).
+        sensitive_target = self.tmp / "FakeSystemRoot"
+        sensitive_target.mkdir()
+        config = copy.deepcopy(self.config)
+        config["base_target_dir"] = str(sensitive_target)
+        config["custom_categories"] = [
+            {"name": "Musique", "extensions": [".mp3"], "target": "Musique"},
+        ]
+        o = self._organizer(base_target_dir=str(sensitive_target), custom_categories=config["custom_categories"])
+        # Reroute directement _is_sensitive_system_path pour simuler un
+        # dossier cible de categorie qui serait, lui, sensible (sans devoir
+        # dependre du vrai C:\Windows de la machine de test).
+        original_check = org.DownloadOrganizer._is_sensitive_system_path
+        def fake_check(path):
+            if path.name == "Musique":
+                return "un dossier systeme (simule)"
+            return original_check(path)
+        org.DownloadOrganizer._is_sensitive_system_path = staticmethod(fake_check)
+        try:
+            self._write("chanson.mp3")
+            result = o.plan()
+        finally:
+            org.DownloadOrganizer._is_sensitive_system_path = staticmethod(original_check)
+        self.assertEqual(result.moves, [])
+        self.assertTrue(result.errors)
+        self.assertIn("dossier systeme", result.errors[0][1])
+
+    def test_is_within_base_accepts_normal_subdirectories_and_rejects_escapes(self):
+        base = self.target
+        self.assertTrue(org.DownloadOrganizer._is_within_base(base / "Documents" / "PDF", base))
+        self.assertTrue(org.DownloadOrganizer._is_within_base(base, base))
+        self.assertFalse(org.DownloadOrganizer._is_within_base(base / ".." / "ailleurs", base))
+        self.assertFalse(org.DownloadOrganizer._is_within_base(Path(base.anchor) / "Windows", base))
+
     def test_purge_history_keeps_only_the_n_most_recent_batches(self):
         for i in range(5):
             org.append_batch_to_history({"index": i})
