@@ -117,9 +117,12 @@ class OrganizerGUI(tk.Tk):
 
         self.custom_categories = copy.deepcopy(self.config_data.get("custom_categories", []))
 
-        cat_columns = ("name", "extensions", "target")
+        cat_columns = ("name", "extensions", "patterns", "target")
         self.categories_tree = ttk.Treeview(cat_frame, columns=cat_columns, show="headings", height=4)
-        for col, label, width in [("name", "Nom", 140), ("extensions", "Extensions", 220), ("target", "Dossier cible", 200)]:
+        for col, label, width in [
+            ("name", "Nom", 120), ("extensions", "Extensions", 160),
+            ("patterns", "Motifs de nom", 160), ("target", "Dossier cible", 180),
+        ]:
             self.categories_tree.heading(col, text=label)
             self.categories_tree.column(col, width=width, anchor="w")
         self.categories_tree.grid(row=0, column=0, columnspan=4, sticky="we", pady=(0, 6))
@@ -130,16 +133,26 @@ class OrganizerGUI(tk.Tk):
         ttk.Entry(cat_frame, textvariable=self.new_category_name_var, width=16).grid(row=2, column=0, sticky="we", padx=(0, 5))
         ttk.Label(cat_frame, text="Extensions (ex: .mp3,.flac)").grid(row=1, column=1, sticky="w")
         self.new_category_ext_var = tk.StringVar()
-        ttk.Entry(cat_frame, textvariable=self.new_category_ext_var, width=25).grid(row=2, column=1, sticky="we", padx=5)
-        ttk.Label(cat_frame, text="Dossier cible (relatif a la destination racine)").grid(row=1, column=2, sticky="w")
+        ttk.Entry(cat_frame, textvariable=self.new_category_ext_var, width=20).grid(row=2, column=1, sticky="we", padx=5)
+        ttk.Label(cat_frame, text="Motifs de nom (optionnel, ex: facture*.pdf)").grid(row=1, column=2, sticky="w")
+        self.new_category_patterns_var = tk.StringVar()
+        ttk.Entry(cat_frame, textvariable=self.new_category_patterns_var, width=20).grid(row=2, column=2, sticky="we", padx=5)
+        ttk.Label(cat_frame, text="Dossier cible (relatif a la destination racine)").grid(row=1, column=3, sticky="w")
         self.new_category_target_var = tk.StringVar()
-        ttk.Entry(cat_frame, textvariable=self.new_category_target_var, width=20).grid(row=2, column=2, sticky="we", padx=5)
-        ttk.Button(cat_frame, text="Ajouter", command=self._add_custom_category).grid(row=2, column=3, sticky="w", padx=(5, 0))
+        ttk.Entry(cat_frame, textvariable=self.new_category_target_var, width=18).grid(row=2, column=3, sticky="we", padx=5)
+        ttk.Button(cat_frame, text="Ajouter", command=self._add_custom_category).grid(row=2, column=4, sticky="w", padx=(5, 0))
         ttk.Button(cat_frame, text="Supprimer la categorie selectionnee", command=self._remove_custom_category).grid(
-            row=3, column=0, columnspan=4, sticky="w", pady=(6, 0)
+            row=3, column=0, columnspan=5, sticky="w", pady=(6, 0)
         )
+        ttk.Label(
+            cat_frame,
+            text="Un motif de nom (ex: facture*.pdf, Capture*.png) est prioritaire sur l'extension, "
+            "y compris celle d'une categorie integree - laissez vide pour un tri par extension seule.",
+            foreground="#666",
+        ).grid(row=4, column=0, columnspan=5, sticky="w", pady=(4, 0))
         cat_frame.columnconfigure(1, weight=1)
         cat_frame.columnconfigure(2, weight=1)
+        cat_frame.columnconfigure(3, weight=1)
 
         # Mode Veille (surveillance optionnelle)
         watch_frame = ttk.LabelFrame(self, text="Mode Veille (optionnel)", padding=10)
@@ -319,7 +332,8 @@ class OrganizerGUI(tk.Tk):
         self.categories_tree.delete(*self.categories_tree.get_children())
         for index, cat in enumerate(self.custom_categories):
             self.categories_tree.insert("", "end", iid=str(index), values=(
-                cat.get("name", ""), ", ".join(cat.get("extensions", [])), cat.get("target", ""),
+                cat.get("name", ""), ", ".join(cat.get("extensions", [])),
+                ", ".join(cat.get("name_patterns", [])), cat.get("target", ""),
             ))
 
     def _add_custom_category(self):
@@ -329,6 +343,7 @@ class OrganizerGUI(tk.Tk):
             e.strip() if e.strip().startswith(".") else f".{e.strip()}"
             for e in self.new_category_ext_var.get().split(",") if e.strip()
         ]
+        name_patterns = [p.strip() for p in self.new_category_patterns_var.get().split(",") if p.strip()]
         if not name or not target or not extensions:
             messagebox.showwarning(
                 "Categorie invalide", "Le nom, les extensions et le dossier cible sont tous obligatoires.",
@@ -340,9 +355,12 @@ class OrganizerGUI(tk.Tk):
                 f"'{name}' est deja utilise (categorie integree ou deja ajoutee). Choisissez un autre nom.",
             )
             return
-        self.custom_categories.append({"name": name, "extensions": extensions, "target": target})
+        self.custom_categories.append({
+            "name": name, "extensions": extensions, "target": target, "name_patterns": name_patterns,
+        })
         self.new_category_name_var.set("")
         self.new_category_ext_var.set("")
+        self.new_category_patterns_var.set("")
         self.new_category_target_var.set("")
         self._refresh_categories_tree()
 

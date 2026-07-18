@@ -521,6 +521,75 @@ class OrganizerTestCase(unittest.TestCase):
         moved = [m for m in result.moves if Path(m.source).name == "doc.pdf"]
         self.assertEqual(moved[0].category, "PDF")
 
+    def test_custom_category_name_pattern_routes_by_filename(self):
+        o = self._organizer(custom_categories=[
+            {"name": "Factures", "extensions": [".pdf"], "target": "Factures", "name_patterns": ["facture*.pdf"]},
+        ])
+        self._write("facture_juillet.pdf", "%PDF-1.4 contenu")
+        result = o.plan()
+        moved = [m for m in result.moves if Path(m.source).name == "facture_juillet.pdf"]
+        self.assertEqual(len(moved), 1)
+        self.assertEqual(moved[0].category, "Factures")
+        self.assertEqual(moved[0].destination.parent, self.target / "Factures")
+
+    def test_name_pattern_takes_priority_over_a_builtin_category_extension(self):
+        # A la difference d'une categorie personnalisee par EXTENSION (qui
+        # perd toujours face a une categorie integree), un motif de nom est
+        # une regle plus specifique et doit l'emporter meme sur PDF.
+        o = self._organizer(custom_categories=[
+            {"name": "Factures", "extensions": [".pdf"], "target": "Factures", "name_patterns": ["facture*.pdf"]},
+        ])
+        self._write("facture_aout.pdf", "%PDF-1.4 contenu facture")
+        self._write("autre_doc.pdf", "%PDF-1.4 contenu different")
+        result = o.plan()
+        by_name = {Path(m.source).name: m.category for m in result.moves}
+        self.assertEqual(by_name["facture_aout.pdf"], "Factures")
+        self.assertEqual(by_name["autre_doc.pdf"], "PDF")
+
+    def test_name_pattern_match_bypasses_the_signature_mismatch_quarantine(self):
+        # Un vrai PDF ("%PDF-1.4...") route par motif de nom vers une
+        # categorie de nom different ("Factures") ne doit PAS etre traite
+        # comme une incoherence extension/contenu (qui l'aurait sinon mis
+        # en quarantaine dans "A verifier", puisque le nom de categorie
+        # "Factures" ne correspond pas au nom "PDF" detecte par signature).
+        o = self._organizer(custom_categories=[
+            {"name": "Factures", "extensions": [".pdf"], "target": "Factures", "name_patterns": ["facture*.pdf"]},
+        ])
+        self._write("facture_2026.pdf", "%PDF-1.4 vrai contenu pdf")
+        result = o.plan()
+        moved = [m for m in result.moves if Path(m.source).name == "facture_2026.pdf"]
+        self.assertEqual(len(moved), 1)
+        self.assertEqual(moved[0].category, "Factures")
+
+    def test_name_pattern_matching_is_case_insensitive(self):
+        o = self._organizer(custom_categories=[
+            {"name": "Factures", "extensions": [".pdf"], "target": "Factures", "name_patterns": ["FACTURE*.pdf"]},
+        ])
+        self._write("Facture_Client.pdf", "%PDF-1.4 contenu")
+        result = o.plan()
+        moved = [m for m in result.moves if Path(m.source).name == "Facture_Client.pdf"]
+        self.assertEqual(moved[0].category, "Factures")
+
+    def test_custom_category_without_name_patterns_behaves_exactly_as_before(self):
+        o = self._organizer(custom_categories=[
+            {"name": "Musique", "extensions": [".mp3"], "target": "Musique"},
+        ])
+        self.assertEqual(o.categories["Musique"].get("name_patterns"), [])
+        self._write("chanson.mp3")
+        result = o.plan()
+        moved = [m for m in result.moves if m.category == "Musique"]
+        self.assertEqual(len(moved), 1)
+
+    def test_is_valid_custom_categories_rejects_non_string_name_patterns(self):
+        self.assertFalse(org._is_valid_custom_categories([
+            {"name": "X", "extensions": [".x"], "target": "X", "name_patterns": [123]},
+        ]))
+
+    def test_is_valid_custom_categories_accepts_missing_name_patterns(self):
+        self.assertTrue(org._is_valid_custom_categories([
+            {"name": "X", "extensions": [".x"], "target": "X"},
+        ]))
+
     def test_get_effective_categories_ignores_malformed_custom_entries(self):
         config = copy.deepcopy(org.DEFAULT_CONFIG)
         config["custom_categories"] = [

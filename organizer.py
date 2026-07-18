@@ -240,17 +240,27 @@ def _is_valid_custom_categories(value) -> bool:
         extensions = item.get("extensions")
         if not isinstance(extensions, list) or not extensions or not all(isinstance(e, str) for e in extensions):
             return False
+        name_patterns = item.get("name_patterns", [])
+        if not isinstance(name_patterns, list) or not all(isinstance(p, str) for p in name_patterns):
+            return False
     return True
 
 
 def get_effective_categories(config: dict) -> dict:
     """Combine DEFAULT_CATEGORIES et les categories personnalisees ajoutees
     par l'utilisateur (config["custom_categories"]) en un seul dict pret a
-    l'emploi {nom: {"extensions": [...], "target": str}}. Une categorie
-    personnalisee ne peut jamais reutiliser le nom d'une categorie integree
-    (elle serait alors simplement ignoree) - les 4 categories de base et
-    leur detection par signature de fichier restent inchangees, seule une
-    extension de la liste est possible via l'ajout de nouvelles categories."""
+    l'emploi {nom: {"extensions": [...], "target": str, "name_patterns": [...]}}.
+    Une categorie personnalisee ne peut jamais reutiliser le nom d'une
+    categorie integree (elle serait alors simplement ignoree) - les 4
+    categories de base et leur detection par signature de fichier restent
+    inchangees, seule une extension de la liste est possible via l'ajout de
+    nouvelles categories.
+
+    `name_patterns` (optionnel, glob via fnmatch) permet de router un
+    fichier vers cette categorie d'apres son NOM plutot que sa seule
+    extension (ex: "facture*.pdf" -> categorie "Factures"), teste en
+    priorite sur toute correspondance par extension - y compris celle
+    d'une categorie integree (voir _category_for)."""
     effective = copy.deepcopy(DEFAULT_CATEGORIES)
     for custom in config.get("custom_categories", []):
         if not isinstance(custom, dict):
@@ -261,8 +271,11 @@ def get_effective_categories(config: dict) -> dict:
             e.strip().lower() if e.strip().startswith(".") else f".{e.strip().lower()}"
             for e in custom.get("extensions", []) if isinstance(e, str) and e.strip()
         ]
+        name_patterns = [
+            p.strip() for p in custom.get("name_patterns", []) if isinstance(p, str) and p.strip()
+        ]
         if name and target and extensions and name not in effective:
-            effective[name] = {"extensions": extensions, "target": target}
+            effective[name] = {"extensions": extensions, "target": target, "name_patterns": name_patterns}
     return effective
 
 
@@ -442,7 +455,38 @@ class DownloadOrganizer:
                 return True
         return False
 
+    def _category_by_name_pattern(self, path: Path) -> Optional[str]:
+        """Categorie personnalisee dont un motif de nom (glob) correspond a
+        ce fichier, ou None. Separee de _category_for pour que plan() sache
+        qu'une correspondance ici est un choix EXPLICITE de l'utilisateur -
+        elle doit court-circuiter la verification d'incoherence
+        extension/signature (voir plan()), puisqu'un motif de nom n'a
+        aucune raison de correspondre au nom de la categorie detectee par
+        signature (ex: "facture*.pdf" route vers "Factures", pas "PDF",
+        alors que le contenu reel est bien un PDF)."""
+        filename_lower = path.name.lower()
+        for category, info in self.categories.items():
+            for pattern in info.get("name_patterns") or ():
+                if fnmatch.fnmatch(filename_lower, pattern.lower()):
+                    return category
+        return None
+
     def _category_for(self, path: Path) -> Optional[str]:
+        # Les regles par motif de nom (categories personnalisees
+        # uniquement - les 4 categories integrees n'en definissent jamais)
+        # sont testees EN PREMIER, avant toute correspondance par extension
+        # y compris celle d'une categorie integree : un motif de nom est
+        # une regle plus specifique/intentionnelle que la simple extension,
+        # c'est precisement ce qui permet par exemple a "facture*.pdf" de
+        # router vers une categorie "Factures" plutot que vers le PDF
+        # generique. Aucune categorie existante ne definissant ce champ
+        # (absent de DEFAULT_CATEGORIES), ce nouveau test est un pur ajout :
+        # il ne change jamais le comportement d'une configuration qui
+        # n'utilise pas cette fonctionnalite.
+        pattern_category = self._category_by_name_pattern(path)
+        if pattern_category is not None:
+            return pattern_category
+
         suffix = path.suffix.lower()
         for category, info in self.categories.items():
             if suffix in info["extensions"]:
@@ -631,6 +675,7 @@ class DownloadOrganizer:
                 result.excluded.append(entry)
                 continue
 
+            pattern_category = self._category_by_name_pattern(entry)
             ext_category = self._category_for(entry)
             suffix = entry.suffix.lower()
             # Lecture de 16 octets seulement : cout negligeable, calcule pour
@@ -644,7 +689,17 @@ class DownloadOrganizer:
             category = ext_category
             reason = ""
 
-            if ext_category is not None and signature_category is not None and signature_category != ext_category:
+            if pattern_category is not None:
+                # Route explicitement par motif de nom : l'utilisateur a
+                # deliberement demande ce routage pour ce nom de fichier,
+                # independamment du contenu reel - la verification
+                # d'incoherence extension/signature ci-dessous ne
+                # s'applique donc pas ici (elle comparerait le nom de la
+                # categorie personnalisee au nom de la categorie detectee
+                # par signature, qui n'ont aucune raison de correspondre).
+                category = pattern_category
+                reason = "motif de nom personnalise"
+            elif ext_category is not None and signature_category is not None and signature_category != ext_category:
                 # L'extension et le contenu reel du fichier ne correspondent pas
                 # (ex: un .exe renomme en .pdf) : on ne fait pas confiance a
                 # l'extension aveuglement, on isole le fichier pour verification.
