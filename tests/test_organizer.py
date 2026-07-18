@@ -164,6 +164,66 @@ class OrganizerTestCase(unittest.TestCase):
         result = o.plan()
         self.assertEqual(len(result.skipped_dirs), 1)
 
+    # -- detection de doublons par hash --------------------------------------
+
+    def test_duplicate_within_same_batch_is_routed_to_doublons(self):
+        self._write("rapport.pdf", "contenu identique")
+        self._write("rapport (1).pdf", "contenu identique")
+        o = self._organizer()
+        result = o.plan()
+
+        categories = sorted(m.category for m in result.moves)
+        self.assertEqual(categories, ["Doublons", "PDF"])
+        # Le premier (ordre alphabetique) est conserve dans sa categorie normale.
+        keeper = next(m for m in result.moves if m.category == "PDF")
+        self.assertEqual(keeper.source.name, "rapport (1).pdf")
+        duplicate = next(m for m in result.moves if m.category == "Doublons")
+        self.assertEqual(duplicate.source.name, "rapport.pdf")
+        self.assertIn("rapport (1).pdf", duplicate.reason)
+
+    def test_same_name_different_content_is_not_a_duplicate(self):
+        self._write("a.pdf", "contenu A")
+        o = self._organizer()
+        result = o.plan()
+        o.execute(result, simulate=False)
+
+        # Nouveau telechargement, meme nom, contenu different.
+        self._write("a.pdf", "contenu B, totalement different")
+        result2 = o.plan()
+        self.assertEqual(len(result2.moves), 1)
+        self.assertEqual(result2.moves[0].category, "PDF")
+        self.assertEqual(result2.moves[0].destination.name, "a (1).pdf")
+
+    def test_duplicate_of_already_organized_file_is_routed_to_doublons(self):
+        self._write("a.pdf", "contenu identique")
+        o = self._organizer()
+        result = o.plan()
+        o.execute(result, simulate=False)
+        self.assertTrue((self.target / "Documents" / "PDF" / "a.pdf").exists())
+
+        # Meme fichier retelecharge sous le meme nom.
+        self._write("a.pdf", "contenu identique")
+        result2 = o.plan()
+        self.assertEqual(len(result2.moves), 1)
+        self.assertEqual(result2.moves[0].category, "Doublons")
+        self.assertIn("deja range", result2.moves[0].reason)
+
+        o.execute(result2, simulate=False)
+        # Le fichier deja range n'a pas ete touche/ecrase.
+        self.assertEqual((self.target / "Documents" / "PDF" / "a.pdf").read_text(), "contenu identique")
+        self.assertTrue((self.target / "Doublons" / "a.pdf").exists())
+
+    def test_three_way_duplicates_keep_only_one(self):
+        self._write("x.pdf", "meme contenu")
+        self._write("y.pdf", "meme contenu")
+        self._write("z.pdf", "meme contenu")
+        o = self._organizer()
+        result = o.plan()
+        keepers = [m for m in result.moves if m.category == "PDF"]
+        duplicates = [m for m in result.moves if m.category == "Doublons"]
+        self.assertEqual(len(keepers), 1)
+        self.assertEqual(len(duplicates), 2)
+
     # -- exclusions ----------------------------------------------------------
 
     def test_extension_exclusion_without_leading_dot_still_works(self):

@@ -8,6 +8,7 @@ fichiers par catégorie :
 - **Archives** → `Archives`
 - **Installateurs** → `Installateurs`
 - **Fichiers anciens** (type non reconnu, plus vieux qu'un seuil configurable) → `A verifier`
+- **Doublons de contenu** (détectés par hash, pas seulement par nom) → `Doublons`
 
 Aucune suppression automatique n'est effectuée : uniquement des déplacements,
 tous réversibles.
@@ -21,6 +22,15 @@ rapide](#lancement-rapide-double-clic) pour créer un raccourci Bureau.
 
 ## Fonctionnalités
 
+- **Détection de doublons par hash de contenu (SHA-256)**, pas seulement par
+  nom de fichier : un même document téléchargé deux fois par le navigateur
+  (`rapport.pdf` et `rapport (1).pdf`, contenu identique) est reconnu comme
+  doublon même si les noms diffèrent. Les doublons sont rangés à part dans
+  `Doublons` plutôt que dupliqués sous un nom numéroté — l'outil ne supprime
+  jamais rien, à vous de trier ce dossier. La détection couvre deux cas :
+  doublons entre fichiers du même lot, et doublon d'un fichier déjà rangé
+  lors d'un run précédent (uniquement en cas de collision de nom, pour rester
+  rapide même sur un gros dossier déjà trié).
 - **Mode simulation** : prévisualise les déplacements sans toucher aux fichiers.
 - **Historique des déplacements** : chaque lot réel est enregistré dans
   `~/.download_organizer/history.json`.

@@ -10,7 +10,15 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 from pathlib import Path
 
-from organizer import DownloadOrganizer, load_config, save_config, load_history, export_html_report, APP_DIR
+from organizer import (
+    DownloadOrganizer,
+    load_config,
+    save_config,
+    load_history,
+    export_html_report,
+    APP_DIR,
+    DUPLICATES_TARGET,
+)
 
 
 class OrganizerGUI(tk.Tk):
@@ -204,9 +212,11 @@ class OrganizerGUI(tk.Tk):
 
         self._fill_preview(result)
         self.organizer.execute(result, simulate=True)
+        duplicates = [m for m in result.moves if m.category == DUPLICATES_TARGET]
         extra = f", {len(result.skipped_dirs)} sous-dossier(s) non parcouru(s)" if result.skipped_dirs else ""
+        dup_note = f", dont {len(duplicates)} doublon(s) de contenu detecte(s)" if duplicates else ""
         self.status_var.set(
-            f"Simulation : {len(result.moves)} fichier(s) seraient deplaces, "
+            f"Simulation : {len(result.moves)} fichier(s) seraient deplaces{dup_note}, "
             f"{len(result.excluded)} ignore(s){extra}. Aucun fichier n'a ete modifie."
         )
 
@@ -228,9 +238,16 @@ class OrganizerGUI(tk.Tk):
 
         self._fill_preview(result)
 
+        duplicates = [m for m in result.moves if m.category == DUPLICATES_TARGET]
+        dup_line = (
+            f"Dont {len(duplicates)} doublon(s) de contenu identique, ranges a part dans "
+            f"'{DUPLICATES_TARGET}' (rien n'est jamais supprime).\n"
+            if duplicates else ""
+        )
         confirm = messagebox.askyesno(
             "Confirmer le rangement",
             f"{len(result.moves)} fichier(s) vont etre deplaces (aucune suppression).\n"
+            f"{dup_line}"
             "Vous pourrez annuler ce lot via le bouton 'Annuler le dernier rangement'.\n\n"
             "Continuer ?",
         )

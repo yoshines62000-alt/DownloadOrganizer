@@ -18,6 +18,8 @@ Utilisable en ligne de commande (CLI) ou via l'interface graphique (GUI).
 from __future__ import annotations
 
 import copy
+import fnmatch
+import hashlib
 import json
 import logging
 import os
@@ -25,7 +27,7 @@ import shutil
 import sys
 import tempfile
 import time
-import fnmatch
+from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -75,6 +77,14 @@ DEFAULT_CATEGORIES = {
 # aucune categorie ci-dessus sont ranges dans "A verifier".
 OLD_FILE_THRESHOLD_DAYS = 90
 OLD_FILES_TARGET = "A verifier"
+
+# Fichiers dont le CONTENU (hash SHA-256) est identique a un autre fichier -
+# soit un autre fichier du meme lot, soit un fichier deja range du meme nom -
+# sont ranges ici plutot que dupliques sous un nom numerote. Detection par
+# contenu, pas seulement par nom : "rapport.pdf" et "rapport (1).pdf"
+# telecharges deux fois par le navigateur sont bien reconnus comme doublons.
+DUPLICATES_TARGET = "Doublons"
+HASH_CHUNK_SIZE = 1024 * 1024
 
 # Motifs toujours exclus, independamment de la configuration utilisateur.
 # Non modifiables depuis la GUI : evite qu'un champ "Motifs" vide par megarde
@@ -256,9 +266,30 @@ class DownloadOrganizer:
 
     def _target_dir_for_category(self, category: str) -> Path:
         base = Path(self.config["base_target_dir"])
-        if category == "A verifier":
-            return base / OLD_FILES_TARGET
+        if category in (OLD_FILES_TARGET, DUPLICATES_TARGET):
+            return base / category
         return base / DEFAULT_CATEGORIES[category]["target"]
+
+    @staticmethod
+    def _file_hash(path: Path, cache: Optional[dict] = None) -> Optional[str]:
+        """Hash SHA-256 du contenu d'un fichier, en flux (pas de lecture
+        integrale en memoire). Renvoie None si le fichier est illisible
+        (verrouille, supprime entre-temps, permissions) : dans ce cas la
+        detection de doublon est simplement desactivee pour ce fichier,
+        il suit le classement normal par extension/anciennete."""
+        if cache is not None and path in cache:
+            return cache[path]
+        digest = hashlib.sha256()
+        try:
+            with open(path, "rb") as f:
+                for chunk in iter(lambda: f.read(HASH_CHUNK_SIZE), b""):
+                    digest.update(chunk)
+            result = digest.hexdigest()
+        except OSError:
+            result = None
+        if cache is not None:
+            cache[path] = result
+        return result
 
     def _unique_destination(self, target_dir: Path, filename: str, reserved: set) -> Path:
         """Trouve une destination libre, en tenant aussi compte des destinations
@@ -299,6 +330,8 @@ class DownloadOrganizer:
             return result
 
         reserved_destinations = set()
+        hash_cache: dict = {}
+        candidates = []  # list[(Path entry, str category, str reason)]
 
         for entry in sorted(downloads_dir.iterdir()):
             if entry.is_dir():
@@ -312,7 +345,7 @@ class DownloadOrganizer:
             reason = ""
             if category is None:
                 if self._is_old(entry):
-                    category = "A verifier"
+                    category = OLD_FILES_TARGET
                     reason = f"fichier de plus de {self.config.get('old_file_threshold_days', OLD_FILE_THRESHOLD_DAYS)} jours, type non reconnu"
                 else:
                     result.excluded.append(entry)
@@ -320,11 +353,68 @@ class DownloadOrganizer:
             else:
                 reason = f"extension {entry.suffix.lower()}"
 
+            candidates.append((entry, category, reason))
+
+        duplicate_of = self._find_duplicates_within_batch(candidates, hash_cache)
+
+        for entry, category, reason in candidates:
+            if entry in duplicate_of:
+                keeper = duplicate_of[entry]
+                dup_dir = self._target_dir_for_category(DUPLICATES_TARGET)
+                destination = self._unique_destination(dup_dir, entry.name, reserved_destinations)
+                dup_reason = f"doublon de contenu identique a {keeper.name} (meme lot)"
+                result.moves.append(PlannedMove(source=entry, destination=destination, category=DUPLICATES_TARGET, reason=dup_reason))
+                continue
+
             target_dir = self._target_dir_for_category(category)
+            natural_destination = target_dir / entry.name
+            if natural_destination.exists() and natural_destination not in reserved_destinations:
+                existing_hash = self._file_hash(natural_destination, hash_cache)
+                source_hash = self._file_hash(entry, hash_cache)
+                if existing_hash is not None and existing_hash == source_hash:
+                    dup_dir = self._target_dir_for_category(DUPLICATES_TARGET)
+                    destination = self._unique_destination(dup_dir, entry.name, reserved_destinations)
+                    try:
+                        existing_label = natural_destination.relative_to(base_target_dir)
+                    except ValueError:
+                        existing_label = natural_destination
+                    dup_reason = f"doublon de contenu identique a {existing_label} (deja range)"
+                    result.moves.append(PlannedMove(source=entry, destination=destination, category=DUPLICATES_TARGET, reason=dup_reason))
+                    continue
+
             destination = self._unique_destination(target_dir, entry.name, reserved_destinations)
             result.moves.append(PlannedMove(source=entry, destination=destination, category=category, reason=reason))
 
         return result
+
+    @staticmethod
+    def _find_duplicates_within_batch(candidates: list, hash_cache: dict) -> dict:
+        """Detecte les doublons de contenu parmi les fichiers du lot courant.
+        Ne hash que les fichiers dont un autre fichier partage exactement la
+        meme taille (evite de hasher inutilement tout le dossier). Renvoie
+        {Path doublon -> Path fichier conserve (le "garde")}."""
+        by_size: dict = defaultdict(list)
+        for entry, _category, _reason in candidates:
+            try:
+                size = entry.stat().st_size
+            except OSError:
+                continue
+            by_size[size].append(entry)
+
+        duplicate_of = {}
+        for size, group in by_size.items():
+            if len(group) < 2:
+                continue
+            seen_hashes: dict = {}
+            for entry in sorted(group, key=lambda p: p.name.lower()):
+                digest = DownloadOrganizer._file_hash(entry, hash_cache)
+                if digest is None:
+                    continue
+                if digest in seen_hashes:
+                    duplicate_of[entry] = seen_hashes[digest]
+                else:
+                    seen_hashes[digest] = entry
+        return duplicate_of
 
     # -- execution --------------------------------------------------------
 
