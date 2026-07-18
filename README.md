@@ -212,8 +212,14 @@ Lancer.vbs                       # raccourci de lancement double-clic (sans cons
 Lancer.bat                       # raccourci de lancement double-clic (avec console, pour debug)
 NettoyeurTelechargements.spec    # configuration de build PyInstaller (.exe autonome)
 .gitignore                       # build/, dist/, __pycache__/, etc. non suivis
+LICENSE                          # licence MIT
 README.md
 ```
+
+## Licence
+
+Ce projet est publié sous licence [MIT](LICENSE) : gratuit, open source, et
+libre de réutilisation, modification et redistribution.
 
 ## ☕ Soutenir le projet
 
