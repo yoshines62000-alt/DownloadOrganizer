@@ -20,10 +20,17 @@ tous réversibles.
 
 ## Démarrage rapide
 
-Double-cliquez sur **[`Lancer.vbs`](Lancer.vbs)** : la fenêtre de l'application
-s'ouvre directement, sans terminal ni ligne de commande. C'est le moyen le
-plus simple de lancer l'outil au quotidien — voir [Lancement
-rapide](#lancement-rapide-double-clic) pour créer un raccourci Bureau.
+1. [**Téléchargez `NettoyeurTelechargements.exe`**](https://github.com/yoshines62000-alt/DownloadOrganizer/releases/latest)
+   depuis la dernière release.
+2. Double-cliquez dessus : la fenêtre de l'application s'ouvre directement,
+   sans installation, sans Python, sans console.
+
+L'exécutable n'étant pas signé numériquement, Windows SmartScreen peut
+afficher un avertissement « éditeur non reconnu » au premier lancement :
+cliquez sur **Informations complémentaires** puis **Exécuter quand même**.
+Si vous préférez éviter cet avertissement ou vérifier vous-même ce que fait
+le code avant de l'exécuter, voir [Lancer depuis le code
+source](#lancer-depuis-le-code-source) ci-dessous.
 
 ## Fonctionnalités
 
@@ -83,23 +90,42 @@ rapide](#lancement-rapide-double-clic) pour créer un raccourci Bureau.
 - **Raccourcis clavier** : `Ctrl+S` (enregistrer), `F5` (simuler),
   `Ctrl+Entrée` (ranger), `Ctrl+Z` (annuler).
 
-## Installation
+## Prise en main de l'interface
 
-Aucune dépendance externe : Python 3.9+ avec Tkinter (inclus dans les
-installations standard de Python sous Windows).
+Que vous lanciez l'exécutable ou le code source, l'interface est la même et
+permet de :
+
+1. Choisir le dossier `Téléchargements` et le dossier de destination racine.
+2. Définir le seuil d'ancienneté (en jours) pour les fichiers non reconnus.
+3. Définir des exclusions personnalisées.
+4. Cliquer sur **Simuler** pour prévisualiser, ou **Ranger les fichiers** pour
+   exécuter réellement les déplacements.
+5. Cliquer sur **Annuler le dernier rangement** pour tout remettre en place.
+6. Cliquer sur **Ouvrir le dossier de destination** pour vérifier le résultat
+   dans l'Explorateur, ou sur **Exporter le rapport (HTML)** pour garder une
+   trace détaillée d'un rangement réel.
+7. Activer le **Mode Veille** pour une surveillance périodique du dossier,
+   avec confirmation groupée avant chaque rangement (voir
+   [Fonctionnalités](#fonctionnalités)).
+8. Consulter l'onglet **Historique** pour voir les lots précédents.
+
+## Lancer depuis le code source
+
+Alternative à l'exécutable : utile si vous préférez éviter l'avertissement
+Windows SmartScreen, si vous voulez inspecter le code avant de l'exécuter,
+ou si vous contribuez au projet. Nécessite Python 3.9+ avec Tkinter (inclus
+dans les installations standard de Python sous Windows) — aucune autre
+dépendance.
 
 ```bash
-python -m venv .venv
-.venv\Scripts\activate
+git clone https://github.com/yoshines62000-alt/DownloadOrganizer.git
+cd DownloadOrganizer
 ```
 
-## Utilisation
+### Raccourci double-clic
 
-### Lancement rapide (double-clic)
-
-Double-cliquez simplement sur **[`Lancer.vbs`](Lancer.vbs)** : la fenêtre de
-l'application s'ouvre directement, sans console. Aucune installation ni
-commande à taper.
+Double-cliquez sur **[`Lancer.vbs`](Lancer.vbs)** : la fenêtre de
+l'application s'ouvre directement, sans console.
 
 Pour un accès encore plus rapide, créez un raccourci sur le Bureau :
 
@@ -116,37 +142,12 @@ Si `Lancer.vbs` ne fonctionne pas (Python introuvable, etc.), utilisez
 **[`Lancer.bat`](Lancer.bat)** à la place : il ouvre une console qui affiche
 les éventuelles erreurs, utile pour diagnostiquer un problème.
 
-### Lancer depuis Python (sans le raccourci)
-
-```bash
-python organizer.py --gui
-```
-
-Ou directement :
-
-```bash
-python gui.py
-```
-
-L'interface permet de :
-
-1. Choisir le dossier `Téléchargements` et le dossier de destination racine.
-2. Définir le seuil d'ancienneté (en jours) pour les fichiers non reconnus.
-3. Définir des exclusions personnalisées.
-4. Cliquer sur **Simuler** pour prévisualiser, ou **Ranger les fichiers** pour
-   exécuter réellement les déplacements.
-5. Cliquer sur **Annuler le dernier rangement** pour tout remettre en place.
-6. Cliquer sur **Ouvrir le dossier de destination** pour vérifier le résultat
-   dans l'Explorateur, ou sur **Exporter le rapport (HTML)** pour garder une
-   trace détaillée d'un rangement réel.
-7. Activer le **Mode Veille** pour une surveillance périodique du dossier,
-   avec confirmation groupée avant chaque rangement (voir
-   [Fonctionnalités](#fonctionnalités)).
-8. Consulter l'onglet **Historique** pour voir les lots précédents.
-
 ### Ligne de commande
 
 ```bash
+python organizer.py --gui   # interface graphique
+python gui.py                # equivalent, directement
+
 # Simulation (aucun fichier modifié)
 python organizer.py
 
@@ -170,11 +171,12 @@ l'interface graphique. L'historique des lots réels est dans
 `~/.download_organizer/reports/`, et le journal d'activité dans
 `~/.download_organizer/app.log`.
 
-## Créer un exécutable autonome (.exe)
+## Regénérer l'exécutable (.exe)
 
-Pour distribuer l'outil sans que le destinataire ait besoin d'installer
-Python, un exécutable Windows autonome peut être généré avec
-[PyInstaller](https://pyinstaller.org/) :
+Pas nécessaire pour un usage normal — voir [Démarrage
+rapide](#démarrage-rapide) pour télécharger l'exécutable déjà compilé. Cette
+section sert à reconstruire l'exe soi-même après une modification du code,
+via [PyInstaller](https://pyinstaller.org/) :
 
 ```bash
 python -m pip install pyinstaller
