@@ -216,25 +216,34 @@ def _is_valid_exclusions(value) -> bool:
     return True
 
 
+def _merge_config_data(data: dict) -> dict:
+    """Fusionne un dict de configuration (venant du disque ou d'un import
+    utilisateur) sur les valeurs par defaut, en ne retenant que les champs
+    connus et correctement types - jamais de confiance aveugle dans un
+    fichier JSON externe, qu'il vienne d'une session precedente ou d'un
+    fichier importe depuis un autre ordinateur."""
+    if not isinstance(data, dict):
+        raise ValueError("Le contenu ne represente pas une configuration valide (objet JSON attendu).")
+
+    merged = copy.deepcopy(DEFAULT_CONFIG)
+    for key in ("downloads_dir", "base_target_dir", "old_file_threshold_days", "watch_interval_seconds"):
+        expected_type = type(DEFAULT_CONFIG[key])
+        value = data.get(key)
+        # bool est une sous-classe d'int : on l'exclut explicitement pour
+        # qu'un champ numerique corrompu en "true"/"false" soit rejete.
+        if key in data and isinstance(value, expected_type) and not isinstance(value, bool):
+            merged[key] = value
+    if _is_valid_exclusions(data.get("exclusions")):
+        merged["exclusions"].update(data["exclusions"])
+    return merged
+
+
 def load_config() -> dict:
     APP_DIR.mkdir(parents=True, exist_ok=True)
     if CONFIG_FILE.exists():
         try:
             data = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
-            if not isinstance(data, dict):
-                raise ValueError("config.json ne contient pas un objet JSON valide")
-
-            merged = copy.deepcopy(DEFAULT_CONFIG)
-            for key in ("downloads_dir", "base_target_dir", "old_file_threshold_days", "watch_interval_seconds"):
-                expected_type = type(DEFAULT_CONFIG[key])
-                value = data.get(key)
-                # bool est une sous-classe d'int : on l'exclut explicitement pour
-                # qu'un champ numerique corrompu en "true"/"false" soit rejete.
-                if key in data and isinstance(value, expected_type) and not isinstance(value, bool):
-                    merged[key] = value
-            if _is_valid_exclusions(data.get("exclusions")):
-                merged["exclusions"].update(data["exclusions"])
-            return merged
+            return _merge_config_data(data)
         except (json.JSONDecodeError, OSError, ValueError, TypeError, AttributeError):
             _ensure_logging_configured()
             logger.warning("config.json invalide ou corrompu, restauration des valeurs par defaut.", exc_info=True)
@@ -249,6 +258,21 @@ def load_config() -> dict:
 
 def save_config(config: dict) -> None:
     _atomic_write_json(CONFIG_FILE, config)
+
+
+def export_config(config: dict, output_path: Path) -> None:
+    """Exporte la configuration actuelle vers un fichier JSON choisi par
+    l'utilisateur (transfert vers un autre PC, sauvegarde manuelle)."""
+    _atomic_write_json(Path(output_path), config)
+
+
+def import_config(input_path: Path) -> dict:
+    """Lit et valide un fichier de configuration exporte, avec exactement
+    les memes garde-fous que le chargement normal (champs inconnus ignores,
+    types incorrects rejetes) - un fichier importe n'est pas plus digne de
+    confiance qu'un config.json corrompu trouve sur disque."""
+    data = json.loads(Path(input_path).read_text(encoding="utf-8"))
+    return _merge_config_data(data)
 
 
 # ---------------------------------------------------------------------------

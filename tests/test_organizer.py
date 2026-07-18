@@ -402,6 +402,49 @@ class OrganizerTestCase(unittest.TestCase):
         cfg = org.load_config()
         self.assertEqual(cfg["old_file_threshold_days"], org.DEFAULT_CONFIG["old_file_threshold_days"])
 
+    def test_export_config_then_import_round_trips(self):
+        cfg = copy.deepcopy(org.DEFAULT_CONFIG)
+        cfg["downloads_dir"] = str(self.downloads)
+        cfg["old_file_threshold_days"] = 45
+        cfg["exclusions"]["extensions"] = [".tmp"]
+        export_path = self.tmp / "export" / "ma_config.json"
+
+        org.export_config(cfg, export_path)
+        self.assertTrue(export_path.exists())
+
+        imported = org.import_config(export_path)
+        self.assertEqual(imported["downloads_dir"], str(self.downloads))
+        self.assertEqual(imported["old_file_threshold_days"], 45)
+        self.assertEqual(imported["exclusions"]["extensions"], [".tmp"])
+
+    def test_import_config_rejects_non_object_json(self):
+        bad_path = self.tmp / "bad_config.json"
+        bad_path.write_text("[1, 2, 3]", encoding="utf-8")
+        with self.assertRaises(ValueError):
+            org.import_config(bad_path)
+
+    def test_import_config_ignores_unknown_and_mistyped_fields(self):
+        # Un fichier importe n'est pas plus digne de confiance qu'un
+        # config.json corrompu trouve sur disque : memes garde-fous.
+        malicious_path = self.tmp / "suspicious_config.json"
+        malicious_path.write_text(json.dumps({
+            "downloads_dir": str(self.downloads),
+            "old_file_threshold_days": True,  # bool rejete, comme pour load_config
+            "some_unknown_field": "ignored",
+            "exclusions": "not-a-dict",
+        }), encoding="utf-8")
+        imported = org.import_config(malicious_path)
+        self.assertEqual(imported["downloads_dir"], str(self.downloads))
+        self.assertEqual(imported["old_file_threshold_days"], org.DEFAULT_CONFIG["old_file_threshold_days"])
+        self.assertEqual(imported["exclusions"], org.DEFAULT_CONFIG["exclusions"])
+        self.assertNotIn("some_unknown_field", imported)
+
+    def test_import_config_raises_on_malformed_json(self):
+        bad_path = self.tmp / "not_json.json"
+        bad_path.write_text("{not valid json at all", encoding="utf-8")
+        with self.assertRaises(json.JSONDecodeError):
+            org.import_config(bad_path)
+
     def test_corrupted_history_returns_empty_list_not_crash(self):
         org.APP_DIR.mkdir(parents=True, exist_ok=True)
         org.HISTORY_FILE.write_text("pas du JSON", encoding="utf-8")

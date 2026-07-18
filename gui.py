@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import io
+import json
 import os
 import time
 import tkinter as tk
@@ -17,6 +18,8 @@ from organizer import (
     DownloadOrganizer,
     load_config,
     save_config,
+    export_config,
+    import_config,
     load_history,
     export_html_report,
     APP_DIR,
@@ -150,6 +153,8 @@ class OrganizerGUI(tk.Tk):
         ttk.Button(btn_frame_2, text="Ouvrir le dossier de destination", command=self._open_target_dir).pack(side="left")
         self.export_btn = ttk.Button(btn_frame_2, text="Exporter le rapport (HTML)", command=self._export_report, state="disabled")
         self.export_btn.pack(side="left", padx=6)
+        ttk.Button(btn_frame_2, text="Exporter la configuration...", command=self._export_config_dialog).pack(side="left", padx=6)
+        ttk.Button(btn_frame_2, text="Importer une configuration...", command=self._import_config_dialog).pack(side="left")
 
         # Notebook: apercu + historique
         notebook = ttk.Notebook(self)
@@ -252,6 +257,50 @@ class OrganizerGUI(tk.Tk):
         save_config(config)
         self.organizer = DownloadOrganizer(config)
         self.status_var.set("Configuration enregistree.")
+
+    def _apply_config_to_ui(self, config: dict) -> None:
+        self.downloads_var.set(config["downloads_dir"])
+        self.base_target_var.set(config["base_target_dir"])
+        self.age_var.set(str(config.get("old_file_threshold_days", 90)))
+        exclusions = config.get("exclusions", {})
+        self.excl_ext_var.set(", ".join(exclusions.get("extensions", [])))
+        self.excl_names_var.set(", ".join(exclusions.get("filenames", [])))
+        self.excl_patterns_var.set(", ".join(exclusions.get("patterns", [])))
+        self.watch_interval_var.set(str(config.get("watch_interval_seconds", DEFAULT_WATCH_INTERVAL_SECONDS)))
+        self.config_data = config
+        self.organizer = DownloadOrganizer(config)
+
+    def _export_config_dialog(self):
+        config = self._collect_config()
+        if config is None:
+            return
+        path = filedialog.asksaveasfilename(
+            title="Exporter la configuration", initialfile="download_organizer_config.json",
+            defaultextension=".json", filetypes=[("Fichier JSON", "*.json")],
+        )
+        if not path:
+            return
+        try:
+            export_config(config, Path(path))
+        except OSError as exc:
+            messagebox.showerror("Erreur", f"Impossible d'exporter la configuration : {exc}")
+            return
+        self.status_var.set(f"Configuration exportee : {path}")
+
+    def _import_config_dialog(self):
+        path = filedialog.askopenfilename(
+            title="Importer une configuration", filetypes=[("Fichier JSON", "*.json")],
+        )
+        if not path:
+            return
+        try:
+            config = import_config(Path(path))
+        except (json.JSONDecodeError, ValueError, OSError) as exc:
+            messagebox.showerror("Erreur", f"Impossible d'importer cette configuration : {exc}")
+            return
+        self._apply_config_to_ui(config)
+        save_config(config)
+        self.status_var.set(f"Configuration importee depuis {Path(path).name} et enregistree.")
 
     def _fill_preview(self, result):
         self.preview_tree.delete(*self.preview_tree.get_children())
