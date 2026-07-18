@@ -35,7 +35,18 @@ python -m venv .venv
 
 ## Utilisation
 
-### Interface graphique
+### Lancement rapide (double-clic)
+
+Double-cliquez simplement sur **`Lancer.vbs`** : la fenêtre de l'application
+s'ouvre directement, sans console. Vous pouvez créer un raccourci vers ce
+fichier sur le Bureau pour un accès encore plus rapide (clic droit sur
+`Lancer.vbs` → Envoyer vers → Bureau (créer un raccourci)).
+
+Si `Lancer.vbs` ne fonctionne pas (Python introuvable, etc.), utilisez
+`Lancer.bat` à la place : il ouvre une console qui affiche les éventuelles
+erreurs.
+
+### Interface graphique en ligne de commande
 
 ```bash
 python organizer.py --gui
