@@ -214,9 +214,20 @@ NettoyeurTelechargements.spec    # configuration de build PyInstaller (.exe auto
 README.md
 ```
 
-## Soutenir le projet
+## ☕ Soutenir le projet
 
-Cet outil est gratuit et open source. S'il vous fait gagner du temps et que
-vous avez envie d'offrir un café, c'est toujours très apprécié :
+<div align="center">
 
-☕ **[ko-fi.com/yoshines62000](https://ko-fi.com/yoshines62000)**
+**Cet outil est gratuit, open source, et le restera toujours.**
+Pas de version payante, pas de fonctionnalité cachée derrière un paywall.
+
+S'il vous a fait gagner du temps, évité de trier vos fichiers à la main,
+ou simplement rendu votre dossier Téléchargements un peu moins chaotique —
+un petit café est toujours très apprécié et aide à financer le temps passé
+sur les prochaines fonctionnalités. 🙌
+
+[![Offrez-moi un café sur Ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/yoshines62000)
+
+*Chaque contribution, même petite, fait vraiment la différence. Merci !* ✨
+
+</div>
