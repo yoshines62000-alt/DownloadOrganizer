@@ -136,6 +136,45 @@ class OrganizerTestCase(unittest.TestCase):
         self.assertTrue((self.downloads / "a.pdf").exists())
         self.assertEqual((self.downloads / "a.pdf").read_text(), "contenu")
 
+    def test_undo_selected_files_restores_only_the_chosen_file(self):
+        self._write("a.pdf", "contenu a")
+        self._write("b.pdf", "contenu b")
+        o = self._organizer()
+        result = o.plan()
+        o.execute(result, simulate=False)
+        self.assertFalse((self.downloads / "a.pdf").exists())
+        self.assertFalse((self.downloads / "b.pdf").exists())
+
+        o.undo_selected_files([str(self.downloads / "a.pdf")])
+        self.assertTrue((self.downloads / "a.pdf").exists())
+        self.assertFalse((self.downloads / "b.pdf").exists())  # b.pdf reste deplace
+
+    def test_undo_selected_files_leaves_batch_undoable_for_remaining_files(self):
+        # Apres une annulation partielle, le fichier restant doit encore
+        # pouvoir etre annule ensuite (le lot ne doit pas etre marque
+        # "termine" tant qu'il reste des entrees "deplace").
+        self._write("a.pdf", "a")
+        self._write("b.pdf", "b")
+        o = self._organizer()
+        result = o.plan()
+        o.execute(result, simulate=False)
+
+        o.undo_selected_files([str(self.downloads / "a.pdf")])
+        o.undo_selected_files([str(self.downloads / "b.pdf")])
+        self.assertTrue((self.downloads / "b.pdf").exists())
+
+        history = org.load_history()
+        self.assertTrue(history[-1]["undone"])  # les deux fichiers traites : lot termine
+
+    def test_undo_selected_files_with_no_matching_source_does_nothing(self):
+        self._write("a.pdf", "a")
+        o = self._organizer()
+        result = o.plan()
+        o.execute(result, simulate=False)
+        outcome = o.undo_selected_files(["/chemin/qui/nexiste/pas.pdf"])
+        self.assertEqual(outcome["undone"], [])
+        self.assertFalse((self.downloads / "a.pdf").exists())
+
     # -- validations de dossiers -------------------------------------------
 
     def test_empty_downloads_dir_is_rejected(self):
@@ -449,6 +488,93 @@ class OrganizerTestCase(unittest.TestCase):
         org.APP_DIR.mkdir(parents=True, exist_ok=True)
         org.HISTORY_FILE.write_text("pas du JSON", encoding="utf-8")
         self.assertEqual(org.load_history(), [])
+
+    def test_custom_category_routes_matching_files_without_code_changes(self):
+        o = self._organizer(custom_categories=[
+            {"name": "Musique", "extensions": [".mp3", ".flac"], "target": "Musique"},
+        ])
+        self._write("chanson.mp3")
+        result = o.plan()
+        moved = [m for m in result.moves if m.category == "Musique"]
+        self.assertEqual(len(moved), 1)
+        self.assertEqual(moved[0].destination.parent, self.target / "Musique")
+
+    def test_custom_category_cannot_override_a_builtin_category_name(self):
+        # "PDF" est deja une categorie integree avec sa propre detection de
+        # signature - une categorie personnalisee du meme nom est ignoree
+        # plutot que de silencieusement remplacer le comportement integre.
+        o = self._organizer(custom_categories=[
+            {"name": "PDF", "extensions": [".weird"], "target": "Autre"},
+        ])
+        self.assertEqual(o.categories["PDF"]["target"], org.DEFAULT_CATEGORIES["PDF"]["target"])
+        self.assertNotIn(".weird", o.categories["PDF"]["extensions"])
+
+    def test_builtin_category_extension_always_wins_over_custom_category(self):
+        # Un ".pdf" doit toujours suivre la detection integree (signature +
+        # categorie "PDF"), meme si une categorie personnalisee tente de
+        # reclamer la meme extension.
+        o = self._organizer(custom_categories=[
+            {"name": "AutrePDF", "extensions": [".pdf"], "target": "AutrePDF"},
+        ])
+        self._write("doc.pdf", "%PDF-1.4 contenu")
+        result = o.plan()
+        moved = [m for m in result.moves if Path(m.source).name == "doc.pdf"]
+        self.assertEqual(moved[0].category, "PDF")
+
+    def test_get_effective_categories_ignores_malformed_custom_entries(self):
+        config = copy.deepcopy(org.DEFAULT_CONFIG)
+        config["custom_categories"] = [
+            {"name": "", "extensions": [".x"], "target": "X"},  # nom vide
+            {"name": "SansExtension", "extensions": [], "target": "Y"},  # aucune extension
+            {"name": "SansCible", "extensions": [".z"], "target": ""},  # cible vide
+            "pas un dict",
+        ]
+        effective = org.get_effective_categories(config)
+        self.assertNotIn("", effective)
+        self.assertNotIn("SansExtension", effective)
+        self.assertNotIn("SansCible", effective)
+
+    def test_import_config_rejects_malformed_custom_categories(self):
+        malicious_path = self.tmp / "bad_categories.json"
+        malicious_path.write_text(json.dumps({
+            "custom_categories": [{"name": "X"}],  # extensions/target manquants
+        }), encoding="utf-8")
+        imported = org.import_config(malicious_path)
+        self.assertEqual(imported["custom_categories"], org.DEFAULT_CONFIG["custom_categories"])
+
+    def test_purge_history_keeps_only_the_n_most_recent_batches(self):
+        for i in range(5):
+            org.append_batch_to_history({"index": i})
+        removed = org.purge_history(keep_last=2)
+        self.assertEqual(removed, 3)
+        remaining = org.load_history()
+        self.assertEqual([b["index"] for b in remaining], [3, 4])
+
+    def test_purge_history_with_no_argument_clears_everything(self):
+        org.append_batch_to_history({"index": 1})
+        org.append_batch_to_history({"index": 2})
+        removed = org.purge_history()
+        self.assertEqual(removed, 2)
+        self.assertEqual(org.load_history(), [])
+
+    def test_purge_history_keep_last_larger_than_history_removes_nothing(self):
+        org.append_batch_to_history({"index": 1})
+        removed = org.purge_history(keep_last=50)
+        self.assertEqual(removed, 0)
+        self.assertEqual(len(org.load_history()), 1)
+
+    def test_append_batch_to_history_auto_truncates_at_max_batches(self):
+        original_max = org.MAX_HISTORY_BATCHES
+        org.MAX_HISTORY_BATCHES = 3
+        try:
+            for i in range(5):
+                org.append_batch_to_history({"index": i})
+            history = org.load_history()
+            self.assertEqual(len(history), 3)
+            # Les plus anciens sont retires en premier, les plus recents gardes.
+            self.assertEqual([b["index"] for b in history], [2, 3, 4])
+        finally:
+            org.MAX_HISTORY_BATCHES = original_max
 
     def test_config_persists_across_reload(self):
         cfg = copy.deepcopy(org.DEFAULT_CONFIG)

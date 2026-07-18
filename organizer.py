@@ -174,6 +174,9 @@ DEFAULT_CONFIG = {
         "filenames": [],        # ex: ["ne_pas_toucher.pdf"]
         "patterns": [],         # motifs personnalises additionnels (ex: "*.bak")
     },
+    # Categories additionnelles definies par l'utilisateur (voir
+    # get_effective_categories) : [{"name": str, "extensions": [str], "target": str}, ...]
+    "custom_categories": [],
 }
 
 
@@ -206,6 +209,45 @@ def _quarantine_corrupted_file(path: Path) -> None:
         pass
 
 
+def _is_valid_custom_categories(value) -> bool:
+    if not isinstance(value, list):
+        return False
+    for item in value:
+        if not isinstance(item, dict):
+            return False
+        if not isinstance(item.get("name"), str) or not item["name"].strip():
+            return False
+        if not isinstance(item.get("target"), str) or not item["target"].strip():
+            return False
+        extensions = item.get("extensions")
+        if not isinstance(extensions, list) or not extensions or not all(isinstance(e, str) for e in extensions):
+            return False
+    return True
+
+
+def get_effective_categories(config: dict) -> dict:
+    """Combine DEFAULT_CATEGORIES et les categories personnalisees ajoutees
+    par l'utilisateur (config["custom_categories"]) en un seul dict pret a
+    l'emploi {nom: {"extensions": [...], "target": str}}. Une categorie
+    personnalisee ne peut jamais reutiliser le nom d'une categorie integree
+    (elle serait alors simplement ignoree) - les 4 categories de base et
+    leur detection par signature de fichier restent inchangees, seule une
+    extension de la liste est possible via l'ajout de nouvelles categories."""
+    effective = copy.deepcopy(DEFAULT_CATEGORIES)
+    for custom in config.get("custom_categories", []):
+        if not isinstance(custom, dict):
+            continue
+        name = str(custom.get("name", "")).strip()
+        target = str(custom.get("target", "")).strip()
+        extensions = [
+            e.strip().lower() if e.strip().startswith(".") else f".{e.strip().lower()}"
+            for e in custom.get("extensions", []) if isinstance(e, str) and e.strip()
+        ]
+        if name and target and extensions and name not in effective:
+            effective[name] = {"extensions": extensions, "target": target}
+    return effective
+
+
 def _is_valid_exclusions(value) -> bool:
     if not isinstance(value, dict):
         return False
@@ -235,6 +277,8 @@ def _merge_config_data(data: dict) -> dict:
             merged[key] = value
     if _is_valid_exclusions(data.get("exclusions")):
         merged["exclusions"].update(data["exclusions"])
+    if _is_valid_custom_categories(data.get("custom_categories")):
+        merged["custom_categories"] = data["custom_categories"]
     return merged
 
 
@@ -298,10 +342,35 @@ def save_history(history: list) -> None:
     _atomic_write_json(HISTORY_FILE, history)
 
 
+# Plafond de securite : au-dela, on tronque automatiquement aux plus recents
+# a chaque ajout, pour qu'un usage quotidien sur plusieurs annees ne fasse
+# jamais grossir history.json indefiniment (chaque lot est reecrit en
+# entier a chaque ajout - voir append_batch_to_history).
+MAX_HISTORY_BATCHES = 2000
+
+
 def append_batch_to_history(batch: dict) -> None:
     history = load_history()
     history.append(batch)
+    if len(history) > MAX_HISTORY_BATCHES:
+        history = history[-MAX_HISTORY_BATCHES:]
     save_history(history)
+
+
+def purge_history(keep_last: Optional[int] = None) -> int:
+    """Ne conserve que les `keep_last` lots les plus recents (tous les
+    supprimer si `keep_last` est None ou 0). Renvoie le nombre de lots
+    retires. Les fichiers deja deplaces sur le disque ne sont jamais
+    affectes - seul le journal d'historique est purge (l'annulation des
+    lots retires ne sera simplement plus possible depuis l'interface)."""
+    history = load_history()
+    original_count = len(history)
+    if not keep_last:
+        history = []
+    else:
+        history = history[-keep_last:]
+    save_history(history)
+    return original_count - len(history)
 
 
 # ---------------------------------------------------------------------------
@@ -331,6 +400,7 @@ class OrganizeResult:
 class DownloadOrganizer:
     def __init__(self, config: Optional[dict] = None):
         self.config = config or load_config()
+        self.categories = get_effective_categories(self.config)
 
     # -- helpers -----------------------------------------------------------
 
@@ -356,7 +426,7 @@ class DownloadOrganizer:
 
     def _category_for(self, path: Path) -> Optional[str]:
         suffix = path.suffix.lower()
-        for category, info in DEFAULT_CATEGORIES.items():
+        for category, info in self.categories.items():
             if suffix in info["extensions"]:
                 return category
         return None
@@ -374,7 +444,7 @@ class DownloadOrganizer:
         base = Path(self.config["base_target_dir"])
         if category in (OLD_FILES_TARGET, DUPLICATES_TARGET):
             return base / category
-        return base / DEFAULT_CATEGORIES[category]["target"]
+        return base / self.categories[category]["target"]
 
     @staticmethod
     def _file_hash(path: Path, cache: Optional[dict] = None) -> Optional[str]:
@@ -659,6 +729,33 @@ class DownloadOrganizer:
 
     # -- annulation ---------------------------------------------------------
 
+    @staticmethod
+    def _attempt_restore_entry(entry: dict) -> tuple:
+        """Tente de remettre un fichier deplace a son emplacement d'origine.
+        Modifie entry["status"] en place. Renvoie (deplace_avec_succes,
+        conflit_potentiellement_resoluble_plus_tard)."""
+        dest_str, src_str = entry.get("destination"), entry.get("source")
+        if not dest_str or not src_str:
+            # history.json modifie/corrompu manuellement : entree incomplete,
+            # on ne peut pas savoir ou remettre ce fichier.
+            entry["status"] = "annulation_impossible"
+            return False, False
+        src = Path(dest_str)
+        dst = Path(src_str)
+        try:
+            if not src.exists():
+                entry["status"] = "annulation_impossible"
+                return False, False
+            elif dst.exists():
+                return False, True  # peut etre retente plus tard si le conflit se resout
+            else:
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(src), str(dst))
+                entry["status"] = "annule"
+                return True, False
+        except OSError:
+            return False, True
+
     def undo_last_batch(self) -> dict:
         history = load_history()
         real_batches = [b for b in history if not b.get("simulated") and not b.get("undone")]
@@ -673,35 +770,64 @@ class DownloadOrganizer:
             if entry.get("status") != "deplace":
                 continue
             dest_str, src_str = entry.get("destination"), entry.get("source")
-            if not dest_str or not src_str:
-                # history.json modifie/corrompu manuellement : entree
-                # incomplete, on ne peut pas savoir ou remettre ce fichier.
-                errors.append((str(entry), "entree d'historique incomplete, annulation impossible pour ce fichier"))
-                entry["status"] = "annulation_impossible"
-                continue
-            src = Path(dest_str)
-            dst = Path(src_str)
-            try:
-                if not src.exists():
-                    errors.append((str(src), "fichier introuvable (deja deplace ou renomme)"))
-                    entry["status"] = "annulation_impossible"
-                elif dst.exists():
-                    errors.append((str(dst), "un fichier existe deja a cet emplacement, annulation ignoree pour ce fichier"))
-                    pending = True  # peut etre retente plus tard si le conflit se resout
-                else:
-                    dst.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.move(str(src), str(dst))
-                    entry["status"] = "annule"
-                    undone.append(entry)
-            except OSError as exc:
-                errors.append((str(src), str(exc)))
-                pending = True
+            success, retryable = self._attempt_restore_entry(entry)
+            if success:
+                undone.append(entry)
+            else:
+                reason = {
+                    "annulation_impossible": (
+                        "entree d'historique incomplete, annulation impossible pour ce fichier"
+                        if not dest_str or not src_str else "fichier introuvable (deja deplace ou renomme)"
+                    ),
+                }.get(entry["status"], "un fichier existe deja a cet emplacement, annulation ignoree pour ce fichier")
+                errors.append((dest_str or str(entry), reason))
+                pending = pending or retryable
 
         # Le lot n'est marque comme definitivement annule que si toutes ses
         # entrees ont ete traitees avec succes ou jugees irrecuperables ; s'il
         # reste des conflits potentiellement resolubles (fichier en place a la
         # destination d'origine), on le laisse disponible pour un nouvel essai.
         if not pending:
+            last_batch["undone"] = True
+        save_history(history)
+
+        return {"undone": undone, "errors": errors}
+
+    def undo_selected_files(self, source_paths) -> dict:
+        """Comme undo_last_batch, mais ne restaure que les fichiers dont le
+        chemin source d'origine (avant deplacement) figure dans
+        `source_paths` - les autres entrees du dernier lot restent
+        deplacees, disponibles pour une annulation ulterieure (totale ou
+        partielle d'un autre sous-ensemble)."""
+        source_paths = {str(p) for p in source_paths}
+        history = load_history()
+        real_batches = [b for b in history if not b.get("simulated") and not b.get("undone")]
+        if not real_batches:
+            return {"undone": [], "errors": [], "message": "Aucun lot a annuler."}
+
+        last_batch = real_batches[-1]
+        undone = []
+        errors = []
+        for entry in last_batch["moves"]:
+            if entry.get("status") != "deplace" or entry.get("source") not in source_paths:
+                continue
+            dest_str, src_str = entry.get("destination"), entry.get("source")
+            success, _retryable = self._attempt_restore_entry(entry)
+            if success:
+                undone.append(entry)
+            else:
+                reason = (
+                    "entree d'historique incomplete, annulation impossible pour ce fichier"
+                    if not dest_str or not src_str else
+                    "fichier introuvable (deja deplace ou renomme)" if entry["status"] == "annulation_impossible" else
+                    "un fichier existe deja a cet emplacement, annulation ignoree pour ce fichier"
+                )
+                errors.append((dest_str or str(entry), reason))
+
+        # Le lot entier n'est marque annule que si PLUS AUCUNE entree n'est
+        # encore a l'etat "deplace" (annulation selective ou non) - sinon
+        # les fichiers non selectionnes doivent rester annulables plus tard.
+        if not any(e.get("status") == "deplace" for e in last_batch["moves"]):
             last_batch["undone"] = True
         save_history(history)
 

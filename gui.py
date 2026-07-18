@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import csv
 import io
 import json
@@ -21,10 +22,12 @@ from organizer import (
     export_config,
     import_config,
     load_history,
+    purge_history,
     export_html_report,
     APP_DIR,
     DUPLICATES_TARGET,
     DEFAULT_WATCH_INTERVAL_SECONDS,
+    DEFAULT_CATEGORIES,
 )
 
 
@@ -106,6 +109,38 @@ class OrganizerGUI(tk.Tk):
 
         excl_frame.columnconfigure(1, weight=1)
 
+        # Categories personnalisees (au-dela des 4 categories integrees :
+        # PDF, Images, Archives, Installateurs - celles-ci gardent leur
+        # detection par signature de fichier et ne sont pas modifiables ici)
+        cat_frame = ttk.LabelFrame(self, text="Categories personnalisees", padding=10)
+        cat_frame.pack(fill="x", padx=10, pady=(0, 10))
+
+        self.custom_categories = copy.deepcopy(self.config_data.get("custom_categories", []))
+
+        cat_columns = ("name", "extensions", "target")
+        self.categories_tree = ttk.Treeview(cat_frame, columns=cat_columns, show="headings", height=4)
+        for col, label, width in [("name", "Nom", 140), ("extensions", "Extensions", 220), ("target", "Dossier cible", 200)]:
+            self.categories_tree.heading(col, text=label)
+            self.categories_tree.column(col, width=width, anchor="w")
+        self.categories_tree.grid(row=0, column=0, columnspan=4, sticky="we", pady=(0, 6))
+        self._refresh_categories_tree()
+
+        ttk.Label(cat_frame, text="Nom").grid(row=1, column=0, sticky="w")
+        self.new_category_name_var = tk.StringVar()
+        ttk.Entry(cat_frame, textvariable=self.new_category_name_var, width=16).grid(row=2, column=0, sticky="we", padx=(0, 5))
+        ttk.Label(cat_frame, text="Extensions (ex: .mp3,.flac)").grid(row=1, column=1, sticky="w")
+        self.new_category_ext_var = tk.StringVar()
+        ttk.Entry(cat_frame, textvariable=self.new_category_ext_var, width=25).grid(row=2, column=1, sticky="we", padx=5)
+        ttk.Label(cat_frame, text="Dossier cible (relatif a la destination racine)").grid(row=1, column=2, sticky="w")
+        self.new_category_target_var = tk.StringVar()
+        ttk.Entry(cat_frame, textvariable=self.new_category_target_var, width=20).grid(row=2, column=2, sticky="we", padx=5)
+        ttk.Button(cat_frame, text="Ajouter", command=self._add_custom_category).grid(row=2, column=3, sticky="w", padx=(5, 0))
+        ttk.Button(cat_frame, text="Supprimer la categorie selectionnee", command=self._remove_custom_category).grid(
+            row=3, column=0, columnspan=4, sticky="w", pady=(6, 0)
+        )
+        cat_frame.columnconfigure(1, weight=1)
+        cat_frame.columnconfigure(2, weight=1)
+
         # Mode Veille (surveillance optionnelle)
         watch_frame = ttk.LabelFrame(self, text="Mode Veille (optionnel)", padding=10)
         watch_frame.pack(fill="x", padx=10, pady=(0, 10))
@@ -149,6 +184,7 @@ class OrganizerGUI(tk.Tk):
         self.run_btn = ttk.Button(btn_frame_1, text="Ranger les fichiers (Ctrl+Entree)", command=self._run_real)
         self.run_btn.pack(side="left")
         ttk.Button(btn_frame_1, text="Annuler le dernier rangement (Ctrl+Z)", command=self._undo).pack(side="left", padx=6)
+        ttk.Button(btn_frame_1, text="Annulation selective...", command=self._selective_undo_dialog).pack(side="left")
 
         ttk.Button(btn_frame_2, text="Ouvrir le dossier de destination", command=self._open_target_dir).pack(side="left")
         self.export_btn = ttk.Button(btn_frame_2, text="Exporter le rapport (HTML)", command=self._export_report, state="disabled")
@@ -180,6 +216,12 @@ class OrganizerGUI(tk.Tk):
 
         history_frame = ttk.Frame(notebook)
         notebook.add(history_frame, text="Historique")
+
+        hist_toolbar = ttk.Frame(history_frame)
+        hist_toolbar.pack(fill="x", padx=4, pady=(4, 0))
+        self.history_summary_var = tk.StringVar(value="")
+        ttk.Label(hist_toolbar, textvariable=self.history_summary_var, foreground="#555").pack(side="left")
+        ttk.Button(hist_toolbar, text="Purger l'historique...", command=self._purge_history_dialog).pack(side="right")
 
         hist_columns = ("date", "mode", "nb", "detail")
         self.history_tree = ttk.Treeview(history_frame, columns=hist_columns, show="headings", height=15)
@@ -248,6 +290,7 @@ class OrganizerGUI(tk.Tk):
             "filenames": split_csv(self.excl_names_var.get()),
             "patterns": split_csv(self.excl_patterns_var.get()),
         }
+        self.config_data["custom_categories"] = copy.deepcopy(self.custom_categories)
         return self.config_data
 
     def _save_config(self):
@@ -267,8 +310,49 @@ class OrganizerGUI(tk.Tk):
         self.excl_names_var.set(", ".join(exclusions.get("filenames", [])))
         self.excl_patterns_var.set(", ".join(exclusions.get("patterns", [])))
         self.watch_interval_var.set(str(config.get("watch_interval_seconds", DEFAULT_WATCH_INTERVAL_SECONDS)))
+        self.custom_categories = copy.deepcopy(config.get("custom_categories", []))
+        self._refresh_categories_tree()
         self.config_data = config
         self.organizer = DownloadOrganizer(config)
+
+    def _refresh_categories_tree(self):
+        self.categories_tree.delete(*self.categories_tree.get_children())
+        for index, cat in enumerate(self.custom_categories):
+            self.categories_tree.insert("", "end", iid=str(index), values=(
+                cat.get("name", ""), ", ".join(cat.get("extensions", [])), cat.get("target", ""),
+            ))
+
+    def _add_custom_category(self):
+        name = self.new_category_name_var.get().strip()
+        target = self.new_category_target_var.get().strip()
+        extensions = [
+            e.strip() if e.strip().startswith(".") else f".{e.strip()}"
+            for e in self.new_category_ext_var.get().split(",") if e.strip()
+        ]
+        if not name or not target or not extensions:
+            messagebox.showwarning(
+                "Categorie invalide", "Le nom, les extensions et le dossier cible sont tous obligatoires.",
+            )
+            return
+        if name in DEFAULT_CATEGORIES or any(c.get("name") == name for c in self.custom_categories):
+            messagebox.showwarning(
+                "Categorie invalide",
+                f"'{name}' est deja utilise (categorie integree ou deja ajoutee). Choisissez un autre nom.",
+            )
+            return
+        self.custom_categories.append({"name": name, "extensions": extensions, "target": target})
+        self.new_category_name_var.set("")
+        self.new_category_ext_var.set("")
+        self.new_category_target_var.set("")
+        self._refresh_categories_tree()
+
+    def _remove_custom_category(self):
+        selection = self.categories_tree.selection()
+        if not selection:
+            messagebox.showinfo("Supprimer une categorie", "Selectionnez une categorie d'abord.")
+            return
+        del self.custom_categories[int(selection[0])]
+        self._refresh_categories_tree()
 
     def _export_config_dialog(self):
         config = self._collect_config()
@@ -580,10 +664,72 @@ class OrganizerGUI(tk.Tk):
             messagebox.showwarning("Annulation partielle", "\n".join(f"{p}: {e}" for p, e in errors))
         self._refresh_history_view()
 
+    def _selective_undo_dialog(self):
+        history = load_history()
+        real_batches = [b for b in history if not b.get("simulated") and not b.get("undone")]
+        if not real_batches:
+            messagebox.showinfo("Annulation selective", "Aucun lot a annuler.")
+            return
+        last_batch = real_batches[-1]
+        moved_entries = [e for e in last_batch["moves"] if e.get("status") == "deplace"]
+        if not moved_entries:
+            messagebox.showinfo("Annulation selective", "Aucun fichier du dernier lot n'est disponible pour annulation.")
+            return
+
+        dialog = tk.Toplevel(self)
+        dialog.title("Annulation selective")
+        dialog.transient(self)
+        dialog.grab_set()
+
+        ttk.Label(dialog, text="Selectionnez les fichiers a remettre dans Telechargements :").pack(
+            anchor="w", padx=10, pady=(10, 5)
+        )
+
+        list_frame = ttk.Frame(dialog)
+        list_frame.pack(fill="both", expand=True, padx=10)
+        listbox = tk.Listbox(list_frame, selectmode="multiple", height=min(15, len(moved_entries)), width=80)
+        for entry in moved_entries:
+            listbox.insert("end", f"{Path(entry['source']).name}  ->  {entry['destination']}")
+        listbox.pack(fill="both", expand=True, side="left")
+        scroll = ttk.Scrollbar(list_frame, orient="vertical", command=listbox.yview)
+        listbox.configure(yscrollcommand=scroll.set)
+        scroll.pack(fill="y", side="right")
+
+        def on_confirm():
+            selected_indices = listbox.curselection()
+            if not selected_indices:
+                messagebox.showinfo("Annulation selective", "Selectionnez au moins un fichier.")
+                return
+            sources = [moved_entries[i]["source"] for i in selected_indices]
+            dialog.destroy()
+            out = self.organizer.undo_selected_files(sources)
+            undone = out.get("undone", [])
+            errors = out.get("errors", [])
+            if undone:
+                self.last_real_batch = None
+                self.export_btn.configure(state="disabled")
+            self.status_var.set(f"{len(undone)} fichier(s) restaure(s), {len(errors)} erreur(s).")
+            if errors:
+                messagebox.showwarning("Annulation partielle", "\n".join(f"{p}: {e}" for p, e in errors))
+            self._refresh_history_view()
+
+        buttons = ttk.Frame(dialog)
+        buttons.pack(fill="x", padx=10, pady=10)
+        ttk.Button(buttons, text="Restaurer la selection", command=on_confirm).pack(side="left")
+        ttk.Button(buttons, text="Annuler", command=dialog.destroy).pack(side="left", padx=6)
+
+    HISTORY_DISPLAY_LIMIT = 200
+
     def _refresh_history_view(self):
         self.history_tree.delete(*self.history_tree.get_children())
         history = load_history()
-        for batch in reversed(history):
+        total = len(history)
+        # N'affiche que les entrees les plus recentes : au-dela de quelques
+        # centaines de lots, peupler tout le Treeview d'un coup ralentirait
+        # l'interface pour peu d'interet (l'historique reste consultable en
+        # totalite via export/purge, juste pas tout affiche a l'ecran).
+        displayed = list(reversed(history))[: self.HISTORY_DISPLAY_LIMIT]
+        for batch in displayed:
             if batch.get("simulated"):
                 mode = "Simulation"
             elif batch.get("undone"):
@@ -597,6 +743,37 @@ class OrganizerGUI(tk.Tk):
             if len(moved) > 5:
                 detail += f", ... (+{len(moved) - 5})"
             self.history_tree.insert("", "end", values=(batch["timestamp"], mode, len(moved), detail))
+
+        if total > len(displayed):
+            self.history_summary_var.set(f"Affichage des {len(displayed)} lots les plus recents sur {total} au total.")
+        else:
+            self.history_summary_var.set(f"{total} lot(s) dans l'historique.")
+
+    def _purge_history_dialog(self):
+        from tkinter import simpledialog
+
+        total = len(load_history())
+        if total == 0:
+            messagebox.showinfo("Purger l'historique", "L'historique est deja vide.")
+            return
+        keep = simpledialog.askinteger(
+            "Purger l'historique",
+            f"L'historique contient {total} lot(s).\n"
+            "Combien des plus recents souhaitez-vous conserver ? (0 pour tout effacer)",
+            initialvalue=total, minvalue=0, maxvalue=total, parent=self,
+        )
+        if keep is None:
+            return
+        if not messagebox.askyesno(
+            "Purger l'historique",
+            f"{total - keep} lot(s) seront definitivement retires de l'historique.\n"
+            "Les fichiers deja deplaces sur le disque ne sont pas affectes, mais l'annulation de "
+            "ces lots ne sera plus possible depuis l'application. Continuer ?",
+        ):
+            return
+        removed = purge_history(keep_last=keep)
+        self._refresh_history_view()
+        self.status_var.set(f"{removed} lot(s) retire(s) de l'historique.")
 
     def _bind_shortcuts(self):
         self.bind_all("<Control-s>", lambda e: self._save_config())
