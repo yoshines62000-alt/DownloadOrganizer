@@ -75,7 +75,9 @@ class OrganizerTestCase(unittest.TestCase):
         o = self._organizer()
         result = o.plan()
         o.execute(result, simulate=False)
-        self.assertTrue((self.target / "Documents" / "PDF" / "a.pdf").exists())
+        moved = self.target / "Documents" / "PDF" / "a.pdf"
+        self.assertTrue(moved.exists())
+        self.assertEqual(moved.read_text(), "original")
 
     def test_undo_does_not_overwrite_new_file(self):
         self._write("a.pdf", "original")
@@ -141,21 +143,40 @@ class OrganizerTestCase(unittest.TestCase):
         result = o.plan()
         self.assertTrue(result.errors)
         self.assertFalse(result.moves)
+        self.assertIn("pas renseigne", result.errors[0][1])
 
     def test_missing_downloads_dir_is_rejected(self):
         o = self._organizer(downloads_dir=str(self.tmp / "n_existe_pas"))
         result = o.plan()
         self.assertTrue(result.errors)
+        self.assertFalse(result.moves)
+        self.assertIn("introuvable", result.errors[0][1])
 
     def test_empty_base_target_dir_is_rejected(self):
         o = self._organizer(base_target_dir="")
         result = o.plan()
         self.assertTrue(result.errors)
+        self.assertFalse(result.moves)
+        self.assertIn("pas renseigne", result.errors[0][1])
 
     def test_missing_base_target_dir_is_rejected(self):
         o = self._organizer(base_target_dir=str(self.tmp / "n_existe_pas"))
         result = o.plan()
         self.assertTrue(result.errors)
+        self.assertFalse(result.moves)
+        self.assertIn("introuvable", result.errors[0][1])
+
+    def test_unreadable_downloads_dir_is_reported_not_crashed(self):
+        # Simule un dossier existant mais illisible (permissions refusees,
+        # lecteur reseau instable) : plan() doit degrader gracieusement
+        # plutot que de laisser l'exception se propager et planter l'appli.
+        import unittest.mock as mock
+        self._write("a.pdf")
+        o = self._organizer()
+        with mock.patch.object(Path, "iterdir", side_effect=OSError("Acces refuse")):
+            result = o.plan()
+        self.assertTrue(result.errors)
+        self.assertFalse(result.moves)
 
     def test_subdirectories_are_reported_not_silently_dropped(self):
         (self.downloads / "un_sous_dossier").mkdir()
@@ -163,6 +184,7 @@ class OrganizerTestCase(unittest.TestCase):
         o = self._organizer()
         result = o.plan()
         self.assertEqual(len(result.skipped_dirs), 1)
+        self.assertEqual(result.skipped_dirs[0].name, "un_sous_dossier")
 
     # -- detection de doublons par hash --------------------------------------
 
@@ -224,6 +246,17 @@ class OrganizerTestCase(unittest.TestCase):
         self.assertEqual(len(keepers), 1)
         self.assertEqual(len(duplicates), 2)
 
+    def test_same_size_different_content_is_not_a_duplicate(self):
+        # Meme taille en octets, contenu different : l'optimisation qui
+        # regroupe par taille avant de hasher ne doit pas se transformer en
+        # detection de doublon par taille seule.
+        self._write("a.pdf", "AAAA")
+        self._write("b.pdf", "BBBB")
+        o = self._organizer()
+        result = o.plan()
+        self.assertEqual(len(result.moves), 2)
+        self.assertTrue(all(m.category == "PDF" for m in result.moves))
+
     # -- reconnaissance par signature de fichier (magic bytes) --------------
 
     def _write_bytes(self, relative_path: str, content: bytes):
@@ -278,6 +311,28 @@ class OrganizerTestCase(unittest.TestCase):
         self.assertEqual(len(result.moves), 1)
         self.assertEqual(result.moves[0].category, "A verifier")
 
+    def test_msix_zip_signature_is_not_falsely_flagged(self):
+        # Comme .apk, .msix est un conteneur ZIP legitime pour un installateur.
+        self._write_bytes("appli.msix", b"PK\x03\x04" + b"\x00" * 60)
+        o = self._organizer()
+        result = o.plan()
+        self.assertEqual(len(result.moves), 1)
+        self.assertEqual(result.moves[0].category, "Installateurs")
+        self.assertNotIn("incoherente", result.moves[0].reason)
+
+    def test_signature_detection_handles_empty_and_short_files(self):
+        # Un fichier vide ou plus court que la taille de lecture de signature
+        # ne doit jamais faire planter la detection, meme sans correspondre
+        # a aucune signature connue.
+        self._write_bytes("vide.inconnu", b"")
+        self._write_bytes("court.inconnu2", b"XY")
+        o = self._organizer()
+        result = o.plan()  # ne doit lever aucune exception
+        # Ni l'un ni l'autre n'a de signature/extension reconnue et ils ne
+        # sont pas assez vieux : ils tombent dans "excluded", pas un crash.
+        self.assertEqual(len(result.moves), 0)
+        self.assertEqual(len(result.excluded), 2)
+
     # -- exclusions ----------------------------------------------------------
 
     def test_extension_exclusion_without_leading_dot_still_works(self):
@@ -313,7 +368,15 @@ class OrganizerTestCase(unittest.TestCase):
         org.APP_DIR.mkdir(parents=True, exist_ok=True)
         org.CONFIG_FILE.write_text(json.dumps({"exclusions": None}), encoding="utf-8")
         cfg = org.load_config()  # ne doit pas lever d'exception
-        self.assertIsInstance(cfg["exclusions"], dict)
+        self.assertEqual(cfg["exclusions"], org.DEFAULT_CONFIG["exclusions"])
+
+    def test_config_with_boolean_threshold_is_rejected(self):
+        # bool est une sous-classe d'int en Python : un JSON corrompu avec
+        # "old_file_threshold_days": true ne doit pas etre accepte tel quel.
+        org.APP_DIR.mkdir(parents=True, exist_ok=True)
+        org.CONFIG_FILE.write_text(json.dumps({"old_file_threshold_days": True}), encoding="utf-8")
+        cfg = org.load_config()
+        self.assertEqual(cfg["old_file_threshold_days"], org.DEFAULT_CONFIG["old_file_threshold_days"])
 
     def test_corrupted_history_returns_empty_list_not_crash(self):
         org.APP_DIR.mkdir(parents=True, exist_ok=True)
@@ -326,6 +389,56 @@ class OrganizerTestCase(unittest.TestCase):
         org.save_config(cfg)
         reloaded = org.load_config()
         self.assertEqual(reloaded["downloads_dir"], str(self.downloads))
+
+    def test_history_write_failure_does_not_crash_execute(self):
+        # Les fichiers sont deja deplaces physiquement a ce stade : un echec
+        # d'ecriture de l'historique (disque plein, permissions) ne doit pas
+        # faire perdre le resultat du lot ni planter l'appli.
+        import unittest.mock as mock
+        self._write("a.pdf")
+        o = self._organizer()
+        result = o.plan()
+        with mock.patch.object(org, "append_batch_to_history", side_effect=OSError("disque plein")):
+            batch = o.execute(result, simulate=False)  # ne doit pas lever d'exception
+        self.assertIn("history_error", batch)
+        moved = [m for m in batch["moves"] if m["status"] == "deplace"]
+        self.assertEqual(len(moved), 1)
+        self.assertTrue((self.target / "Documents" / "PDF" / "a.pdf").exists())
+
+    def test_undo_with_malformed_history_entry_does_not_crash(self):
+        self._write("a.pdf")
+        o = self._organizer()
+        result = o.plan()
+        batch = o.execute(result, simulate=False)
+        # Simule une entree d'historique corrompue (edition manuelle) a
+        # laquelle il manque la cle "source".
+        history = org.load_history()
+        del history[-1]["moves"][0]["source"]
+        org.save_history(history)
+
+        out = o.undo_last_batch()  # ne doit pas lever d'exception (KeyError)
+        self.assertEqual(out["undone"], [])
+        self.assertTrue(out["errors"])
+
+    def test_undo_retries_after_conflict_is_resolved(self):
+        self._write("a.pdf", "original")
+        o = self._organizer()
+        result = o.plan()
+        o.execute(result, simulate=False)
+
+        # Un nouveau fichier bloque temporairement l'annulation.
+        blocker = self.downloads / "a.pdf"
+        blocker.write_text("bloque temporairement")
+        first = o.undo_last_batch()
+        self.assertEqual(first["undone"], [])
+        self.assertTrue(first["errors"])
+
+        # Une fois le conflit resolu (fichier bloquant retire), une nouvelle
+        # tentative d'annulation doit pouvoir reussir sur le meme lot.
+        blocker.unlink()
+        second = o.undo_last_batch()
+        self.assertEqual(len(second["undone"]), 1)
+        self.assertEqual(blocker.read_text(), "original")
 
     # -- rapport HTML ---------------------------------------------------------
 
@@ -340,6 +453,29 @@ class OrganizerTestCase(unittest.TestCase):
         content = report_path.read_text(encoding="utf-8")
         self.assertIn("a.pdf", content)
         self.assertIn("<table>", content)
+
+    def test_export_html_report_escapes_injected_content(self):
+        # Verifie que _html_escape est bien applique aux champs interpoles,
+        # pas seulement que le fichier ne plante pas a la generation.
+        batch = {
+            "timestamp": "2026-01-01 12:00:00",
+            "simulated": False,
+            "moves": [
+                {
+                    "source": "<script>bad.pdf",
+                    "destination": "C:/Target/PDF/<script>bad.pdf",
+                    "category": "PDF",
+                    "reason": "extension .pdf & test",
+                    "status": "deplace",
+                }
+            ],
+        }
+        report_path = self.tmp / "rapport_injection.html"
+        org.export_html_report(batch, report_path)
+        content = report_path.read_text(encoding="utf-8")
+        self.assertNotIn("<script>bad.pdf", content)
+        self.assertIn("&lt;script&gt;bad.pdf", content)
+        self.assertIn("&amp;", content)
 
 
 if __name__ == "__main__":

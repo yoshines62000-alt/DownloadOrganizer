@@ -41,7 +41,6 @@ class OrganizerGUI(tk.Tk):
 
         self.config_data = load_config()
         self.organizer = DownloadOrganizer(self.config_data)
-        self.last_plan_result = None
         self.last_real_batch = None
 
         # Etat du mode Veille : jamais active automatiquement au demarrage,
@@ -130,18 +129,24 @@ class OrganizerGUI(tk.Tk):
             foreground="#555",
         ).grid(row=2, column=0, columnspan=4, sticky="w", pady=(2, 0))
 
-        # Boutons d'action
-        btn_frame = ttk.Frame(self, padding=(10, 0))
-        btn_frame.pack(fill="x")
+        # Boutons d'action, repartis sur deux rangees : un seul rang de 6
+        # boutons deborde de la fenetre par defaut (largeur fixe 880px) et
+        # tronque/cache les derniers boutons plutot que de les faire passer
+        # a la ligne (ttk.Frame + pack(side="left") ne wrap jamais).
+        btn_frame_1 = ttk.Frame(self, padding=(10, 0))
+        btn_frame_1.pack(fill="x")
+        btn_frame_2 = ttk.Frame(self, padding=(10, 4))
+        btn_frame_2.pack(fill="x")
 
-        ttk.Button(btn_frame, text="Enregistrer la configuration (Ctrl+S)", command=self._save_config).pack(side="left")
-        ttk.Button(btn_frame, text="Simuler (F5)", command=self._simulate).pack(side="left", padx=6)
-        self.run_btn = ttk.Button(btn_frame, text="Ranger les fichiers (Ctrl+Entree)", command=self._run_real)
+        ttk.Button(btn_frame_1, text="Enregistrer la configuration (Ctrl+S)", command=self._save_config).pack(side="left")
+        ttk.Button(btn_frame_1, text="Simuler (F5)", command=self._simulate).pack(side="left", padx=6)
+        self.run_btn = ttk.Button(btn_frame_1, text="Ranger les fichiers (Ctrl+Entree)", command=self._run_real)
         self.run_btn.pack(side="left")
-        ttk.Button(btn_frame, text="Annuler le dernier rangement (Ctrl+Z)", command=self._undo).pack(side="left", padx=6)
-        ttk.Button(btn_frame, text="Ouvrir le dossier de destination", command=self._open_target_dir).pack(side="left", padx=6)
-        self.export_btn = ttk.Button(btn_frame, text="Exporter le rapport (HTML)", command=self._export_report, state="disabled")
-        self.export_btn.pack(side="left")
+        ttk.Button(btn_frame_1, text="Annuler le dernier rangement (Ctrl+Z)", command=self._undo).pack(side="left", padx=6)
+
+        ttk.Button(btn_frame_2, text="Ouvrir le dossier de destination", command=self._open_target_dir).pack(side="left")
+        self.export_btn = ttk.Button(btn_frame_2, text="Exporter le rapport (HTML)", command=self._export_report, state="disabled")
+        self.export_btn.pack(side="left", padx=6)
 
         # Notebook: apercu + historique
         notebook = ttk.Notebook(self)
@@ -242,7 +247,6 @@ class OrganizerGUI(tk.Tk):
         self.preview_tree.delete(*self.preview_tree.get_children())
         for move in result.moves:
             self.preview_tree.insert("", "end", values=(move.source.name, move.category, str(move.destination), move.reason))
-        self.last_plan_result = result
 
     def _simulate(self):
         config = self._collect_config()
@@ -251,15 +255,21 @@ class OrganizerGUI(tk.Tk):
         # Intentionnellement non persiste : "Simuler" sert a tester des valeurs
         # sans les enregistrer definitivement. Utilisez "Enregistrer la
         # configuration" ou "Ranger les fichiers" pour persister.
-        self.organizer = DownloadOrganizer(config)
+        #
+        # Important : on utilise un organizer temporaire, sans toucher a
+        # self.organizer. Si le Mode Veille tourne en arriere-plan, il
+        # continue d'utiliser la configuration active (sauvegardee) - un
+        # simple "Simuler" ne doit jamais changer silencieusement son
+        # comportement.
+        preview_organizer = DownloadOrganizer(config)
 
-        result = self.organizer.plan()
+        result = preview_organizer.plan()
         if result.errors:
             messagebox.showerror("Erreur", "\n".join(f"{p}: {e}" for p, e in result.errors))
             return
 
         self._fill_preview(result)
-        self.organizer.execute(result, simulate=True)
+        preview_organizer.execute(result, simulate=True)
         duplicates = [m for m in result.moves if m.category == DUPLICATES_TARGET]
         extra = f", {len(result.skipped_dirs)} sous-dossier(s) non parcouru(s)" if result.skipped_dirs else ""
         dup_note = f", dont {len(duplicates)} doublon(s) de contenu detecte(s)" if duplicates else ""
@@ -312,6 +322,13 @@ class OrganizerGUI(tk.Tk):
             messagebox.showwarning(
                 "Terminee avec des erreurs",
                 "\n".join(f"{e['source']}: {e.get('error', '')}" for e in errors),
+            )
+        if batch.get("history_error"):
+            messagebox.showwarning(
+                "Historique non enregistre",
+                "Les fichiers ont bien ete deplaces, mais l'historique n'a pas pu etre "
+                f"enregistre ({batch['history_error']}) : l'annulation ne sera pas "
+                "disponible pour ce lot.",
             )
         self._refresh_history_view()
 
@@ -381,8 +398,11 @@ class OrganizerGUI(tk.Tk):
 
         try:
             result = self.organizer.plan()
-        except OSError as exc:
-            self._stop_watch(f"Veille interrompue : {exc}")
+        except Exception as exc:  # noqa: BLE001 - garde-fou de la boucle de fond :
+            # toute exception inattendue doit arreter proprement la veille et
+            # le signaler, plutot que de laisser un self.after() jamais
+            # reprogramme geler silencieusement "Veille active" pour toujours.
+            self._stop_watch(f"Veille interrompue (erreur inattendue) : {exc}")
             return
 
         if result.errors:
@@ -449,15 +469,26 @@ class OrganizerGUI(tk.Tk):
                     "Terminee avec des erreurs",
                     "\n".join(f"{e['source']}: {e.get('error', '')}" for e in errors),
                 )
+            if batch.get("history_error"):
+                messagebox.showwarning(
+                    "Historique non enregistre",
+                    "Les fichiers ont bien ete deplaces, mais l'historique n'a pas pu etre "
+                    f"enregistre ({batch['history_error']}) : l'annulation ne sera pas "
+                    "disponible pour ce lot.",
+                )
             self._refresh_history_view()
         else:
             self.watch_status_var.set(
-                "Veille active : rangement ignore pour ce lot. Il sera reproposé si le dossier change."
+                "Veille active : rangement ignore pour ce lot. Il sera reproposé au prochain "
+                "controle stable (meme si le dossier ne change pas d'ici la)."
             )
 
     def _on_close(self):
         self._stop_watch()
-        self.destroy()
+        try:
+            self.destroy()
+        except tk.TclError:
+            pass
 
     def _undo(self):
         confirm = messagebox.askyesno(
@@ -475,6 +506,14 @@ class OrganizerGUI(tk.Tk):
         if not undone and not errors:
             messagebox.showinfo("Rien a annuler", out.get("message", "Aucun lot a annuler."))
             return
+
+        if undone:
+            # Le dernier rapport exportable concernait un lot desormais (au
+            # moins partiellement) annule : le proposer encore donnerait un
+            # rapport trompeur (fichiers listes "deplaces" alors qu'ils ont
+            # ete remis dans Telechargements).
+            self.last_real_batch = None
+            self.export_btn.configure(state="disabled")
 
         self.status_var.set(f"{len(undone)} fichier(s) restaure(s), {len(errors)} erreur(s).")
         if errors:

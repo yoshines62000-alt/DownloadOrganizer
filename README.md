@@ -211,6 +211,7 @@ tests/test_organizer.py          # tests automatises
 Lancer.vbs                       # raccourci de lancement double-clic (sans console)
 Lancer.bat                       # raccourci de lancement double-clic (avec console, pour debug)
 NettoyeurTelechargements.spec    # configuration de build PyInstaller (.exe autonome)
+.gitignore                       # build/, dist/, __pycache__/, etc. non suivis
 README.md
 ```
 

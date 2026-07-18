@@ -226,8 +226,12 @@ def load_config() -> dict:
 
             merged = copy.deepcopy(DEFAULT_CONFIG)
             for key in ("downloads_dir", "base_target_dir", "old_file_threshold_days", "watch_interval_seconds"):
-                if key in data and isinstance(data[key], type(DEFAULT_CONFIG[key])):
-                    merged[key] = data[key]
+                expected_type = type(DEFAULT_CONFIG[key])
+                value = data.get(key)
+                # bool est une sous-classe d'int : on l'exclut explicitement pour
+                # qu'un champ numerique corrompu en "true"/"false" soit rejete.
+                if key in data and isinstance(value, expected_type) and not isinstance(value, bool):
+                    merged[key] = value
             if _is_valid_exclusions(data.get("exclusions")):
                 merged["exclusions"].update(data["exclusions"])
             return merged
@@ -235,7 +239,11 @@ def load_config() -> dict:
             _ensure_logging_configured()
             logger.warning("config.json invalide ou corrompu, restauration des valeurs par defaut.", exc_info=True)
             _quarantine_corrupted_file(CONFIG_FILE)
-    save_config(DEFAULT_CONFIG)
+    try:
+        save_config(DEFAULT_CONFIG)
+    except OSError:
+        _ensure_logging_configured()
+        logger.warning("Impossible d'ecrire la configuration initiale sur disque.", exc_info=True)
     return copy.deepcopy(DEFAULT_CONFIG)
 
 
@@ -408,7 +416,13 @@ class DownloadOrganizer:
         signature_cache: dict = {}
         candidates = []  # list[(Path entry, str category, str reason)]
 
-        for entry in sorted(downloads_dir.iterdir()):
+        try:
+            entries = sorted(downloads_dir.iterdir())
+        except OSError as exc:
+            result.errors.append((downloads_dir, f"Impossible de lire le contenu du dossier : {exc}"))
+            return result
+
+        for entry in entries:
             if entry.is_dir():
                 result.skipped_dirs.append(entry)
                 continue
@@ -556,7 +570,17 @@ class DownloadOrganizer:
             batch["moves"].append(entry)
 
         if not simulate:
-            append_batch_to_history(batch)
+            # Les fichiers ont deja ete physiquement deplaces a ce stade : un
+            # echec d'ecriture de l'historique (disque plein, permissions,
+            # antivirus) ne doit ni faire planter l'appli ni faire perdre le
+            # resultat du lot. On le signale dans le batch plutot que de
+            # laisser l'exception se propager.
+            try:
+                append_batch_to_history(batch)
+            except OSError as exc:
+                _ensure_logging_configured()
+                logger.error("Echec de l'enregistrement de l'historique : %s", exc)
+                batch["history_error"] = str(exc)
 
         return batch
 
@@ -575,8 +599,15 @@ class DownloadOrganizer:
         for entry in last_batch["moves"]:
             if entry.get("status") != "deplace":
                 continue
-            src = Path(entry["destination"])
-            dst = Path(entry["source"])
+            dest_str, src_str = entry.get("destination"), entry.get("source")
+            if not dest_str or not src_str:
+                # history.json modifie/corrompu manuellement : entree
+                # incomplete, on ne peut pas savoir ou remettre ce fichier.
+                errors.append((str(entry), "entree d'historique incomplete, annulation impossible pour ce fichier"))
+                entry["status"] = "annulation_impossible"
+                continue
+            src = Path(dest_str)
+            dst = Path(src_str)
             try:
                 if not src.exists():
                     errors.append((str(src), "fichier introuvable (deja deplace ou renomme)"))
