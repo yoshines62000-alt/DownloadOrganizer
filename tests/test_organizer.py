@@ -546,12 +546,13 @@ class OrganizerTestCase(unittest.TestCase):
         self.assertEqual(by_name["facture_aout.pdf"], "Factures")
         self.assertEqual(by_name["autre_doc.pdf"], "PDF")
 
-    def test_name_pattern_match_bypasses_the_signature_mismatch_quarantine(self):
+    def test_name_pattern_match_on_genuinely_matching_content_is_not_flagged_as_mismatch(self):
         # Un vrai PDF ("%PDF-1.4...") route par motif de nom vers une
         # categorie de nom different ("Factures") ne doit PAS etre traite
-        # comme une incoherence extension/contenu (qui l'aurait sinon mis
-        # en quarantaine dans "A verifier", puisque le nom de categorie
-        # "Factures" ne correspond pas au nom "PDF" detecte par signature).
+        # comme une incoherence extension/contenu simplement parce que le
+        # nom de la categorie ("Factures") ne correspond pas au nom "PDF"
+        # detecte par signature - il n'y a ici aucune incoherence REELLE
+        # (le contenu est bien un PDF), seul le nom de la categorie differe.
         o = self._organizer(custom_categories=[
             {"name": "Factures", "extensions": [".pdf"], "target": "Factures", "name_patterns": ["facture*.pdf"]},
         ])
@@ -560,6 +561,24 @@ class OrganizerTestCase(unittest.TestCase):
         moved = [m for m in result.moves if Path(m.source).name == "facture_2026.pdf"]
         self.assertEqual(len(moved), 1)
         self.assertEqual(moved[0].category, "Factures")
+
+    def test_a_broad_name_pattern_never_bypasses_a_genuine_signature_mismatch(self):
+        # Regression trouvee a l'audit : un motif large et parfaitement
+        # plausible comme "*.pdf" (router TOUS ses PDF vers "Factures")
+        # routait aussi, sans le moindre avertissement, un executable
+        # renomme en ".pdf" - la toute chose que la quarantaine
+        # extension/signature existe pour detecter. Le motif de nom ne doit
+        # jamais dispenser de cette verification quand une incoherence
+        # REELLE existe entre l'extension et le contenu.
+        o = self._organizer(custom_categories=[
+            {"name": "Factures", "extensions": [".pdf"], "target": "Factures", "name_patterns": ["*.pdf"]},
+        ])
+        self._write("invoice.pdf", "MZ" + "\x00" * 100)  # signature d'executable Windows (PE), pas un PDF
+        result = o.plan()
+        moved = [m for m in result.moves if Path(m.source).name == "invoice.pdf"]
+        self.assertEqual(len(moved), 1)
+        self.assertEqual(moved[0].category, org.OLD_FILES_TARGET)
+        self.assertIn("incoherente", moved[0].reason)
 
     def test_name_pattern_matching_is_case_insensitive(self):
         o = self._organizer(custom_categories=[

@@ -458,17 +458,36 @@ class DownloadOrganizer:
     def _category_by_name_pattern(self, path: Path) -> Optional[str]:
         """Categorie personnalisee dont un motif de nom (glob) correspond a
         ce fichier, ou None. Separee de _category_for pour que plan() sache
-        qu'une correspondance ici est un choix EXPLICITE de l'utilisateur -
-        elle doit court-circuiter la verification d'incoherence
-        extension/signature (voir plan()), puisqu'un motif de nom n'a
-        aucune raison de correspondre au nom de la categorie detectee par
-        signature (ex: "facture*.pdf" route vers "Factures", pas "PDF",
-        alors que le contenu reel est bien un PDF)."""
+        qu'une correspondance ici est un choix EXPLICITE de l'utilisateur
+        sur la DESTINATION du fichier (ex: "facture*.pdf" route vers
+        "Factures" plutot que "PDF", alors que le contenu reel est bien un
+        PDF). Ce choix ne dispense jamais de la verification d'incoherence
+        extension/signature : voir plan(), qui l'applique AVANT tout
+        routage par motif de nom, precisement pour qu'un motif large
+        (ex: "*.pdf") ne puisse jamais faire passer un executable renomme
+        pour un PDF sans declencher la quarantaine."""
         filename_lower = path.name.lower()
         for category, info in self.categories.items():
             for pattern in info.get("name_patterns") or ():
                 if fnmatch.fnmatch(filename_lower, pattern.lower()):
                     return category
+        return None
+
+    def _category_by_extension(self, path: Path) -> Optional[str]:
+        """Categorie dont une extension correspond a `path`, en ignorant
+        totalement les motifs de nom - separee de `_category_for` pour que
+        plan() puisse comparer CETTE categorie (une vraie correspondance
+        d'extension) a celle detectee par signature, sans jamais melanger
+        un routage par motif de nom avec une correspondance d'extension
+        (voir plan() : merger les deux ici aurait fait declencher une fausse
+        incoherence extension/signature des qu'un motif de nom route un
+        fichier vers une categorie dont le nom differe du nom detecte par
+        signature, meme quand le contenu est parfaitement coherent -
+        bug trouve a l'audit)."""
+        suffix = path.suffix.lower()
+        for category, info in self.categories.items():
+            if suffix in info["extensions"]:
+                return category
         return None
 
     def _category_for(self, path: Path) -> Optional[str]:
@@ -486,12 +505,7 @@ class DownloadOrganizer:
         pattern_category = self._category_by_name_pattern(path)
         if pattern_category is not None:
             return pattern_category
-
-        suffix = path.suffix.lower()
-        for category, info in self.categories.items():
-            if suffix in info["extensions"]:
-                return category
-        return None
+        return self._category_by_extension(path)
 
     def _is_old(self, path: Path) -> bool:
         threshold_days = self.config.get("old_file_threshold_days", OLD_FILE_THRESHOLD_DAYS)
@@ -707,7 +721,13 @@ class DownloadOrganizer:
                 continue
 
             pattern_category = self._category_by_name_pattern(entry)
-            ext_category = self._category_for(entry)
+            # _category_by_extension (PAS _category_for, qui integre aussi
+            # les motifs de nom) : la verification d'incoherence
+            # extension/signature ci-dessous doit comparer une vraie
+            # correspondance d'extension a la signature detectee, jamais
+            # une categorie choisie par motif de nom dont le nom differe
+            # legitimement du nom detecte par signature.
+            ext_category = self._category_by_extension(entry)
             suffix = entry.suffix.lower()
             # Lecture de 16 octets seulement : cout negligeable, calcule pour
             # chaque fichier (utilise ensuite pour detecter les incoherences
@@ -720,25 +740,31 @@ class DownloadOrganizer:
             category = ext_category
             reason = ""
 
-            if pattern_category is not None:
-                # Route explicitement par motif de nom : l'utilisateur a
-                # deliberement demande ce routage pour ce nom de fichier,
-                # independamment du contenu reel - la verification
-                # d'incoherence extension/signature ci-dessous ne
-                # s'applique donc pas ici (elle comparerait le nom de la
-                # categorie personnalisee au nom de la categorie detectee
-                # par signature, qui n'ont aucune raison de correspondre).
-                category = pattern_category
-                reason = "motif de nom personnalise"
-            elif ext_category is not None and signature_category is not None and signature_category != ext_category:
-                # L'extension et le contenu reel du fichier ne correspondent pas
-                # (ex: un .exe renomme en .pdf) : on ne fait pas confiance a
-                # l'extension aveuglement, on isole le fichier pour verification.
+            # Coherence extension/signature verifiee AVANT tout routage par
+            # motif de nom : un motif de nom (ex: "*.pdf" pour tout envoyer
+            # vers "Factures") choisit OU va le fichier, mais ne doit jamais
+            # decider QUE le contenu reel n'a pas besoin d'etre verifie -
+            # sinon un executable renomme en ".pdf" et capture par un motif
+            # aussi large que "*.pdf" (une config tout a fait plausible,
+            # pas une attaque deliberee) serait route en toute confiance
+            # vers "Factures" sans jamais declencher la quarantaine
+            # censee proteger precisement contre ce cas (bug trouve a
+            # l'audit). Un motif de nom NARROW cible comme "facture*.pdf"
+            # applique sur un vrai PDF ne declenche jamais cette branche,
+            # puisqu'il n'y a alors aucune incoherence reelle.
+            if ext_category is not None and signature_category is not None and signature_category != ext_category:
                 category = OLD_FILES_TARGET
                 reason = (
                     f"extension '{suffix}' incoherente avec le contenu reel du fichier "
                     f"(signature detectee : {signature_category}) - verification manuelle recommandee"
                 )
+            elif pattern_category is not None:
+                # Route explicitement par motif de nom : l'utilisateur a
+                # deliberement demande ce routage pour ce nom de fichier -
+                # mais seulement une fois la coherence extension/signature
+                # ci-dessus confirmee (aucune incoherence detectee).
+                category = pattern_category
+                reason = "motif de nom personnalise"
             elif ext_category is not None:
                 reason = f"extension {suffix}"
             elif signature_category is not None and suffix not in ZIP_LIKE_NON_ARCHIVE_EXTENSIONS:
