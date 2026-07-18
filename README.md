@@ -20,8 +20,14 @@ tous réversibles.
 - **Bouton Annuler** : restaure le dernier lot de déplacements réels vers son
   emplacement d'origine.
 - **Exclusions personnalisées** : par extension, par nom de fichier exact, ou
-  par motif glob (ex. `*.crdownload`, `*.part`).
-- **Aucune suppression automatique.**
+  par motif glob additionnel (ex. `*.bak`).
+- **Protections intégrées toujours actives** : `*.crdownload`, `*.part`,
+  `*.tmp`, `desktop.ini`, `*.download` sont exclus en permanence, même si le
+  champ « Motifs » est vidé.
+- **Aucune suppression automatique** : les déplacements ne remplacent jamais
+  un fichier déjà présent à la destination (ni à l'aller, ni lors d'une
+  annulation) — en cas de conflit, ce fichier est simplement laissé de côté
+  et signalé.
 
 ## Installation
 
@@ -80,7 +86,8 @@ python organizer.py --run
 # Annuler le dernier lot de déplacements réels
 python organizer.py --undo
 
-# Spécifier un dossier Téléchargements différent
+# Spécifier un dossier Téléchargements différent pour cette execution
+# uniquement (non enregistre dans la configuration)
 python organizer.py --downloads-dir "D:\Autre\Telechargements" --run
 ```
 
