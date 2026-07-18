@@ -64,6 +64,11 @@ class OrganizerGUI(tk.Tk):
         self._bind_shortcuts()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
+        # Verification silencieuse au demarrage, jamais bloquante : ne
+        # propose jamais de suppression automatique, se contente d'informer
+        # si "A verifier"/"Doublons" accumulent des fichiers a trier.
+        self.after(200, self._check_stale_review_folders)
+
     # ------------------------------------------------------------------
     # Construction de l'UI
     # ------------------------------------------------------------------
@@ -644,6 +649,30 @@ class OrganizerGUI(tk.Tk):
                 "Veille active : rangement ignore pour ce lot. Il sera reproposé au prochain "
                 "controle stable (meme si le dossier ne change pas d'ici la)."
             )
+
+    def _check_stale_review_folders(self):
+        """Verification silencieuse au demarrage : informe sans jamais
+        bloquer ni proposer de suppression si "A verifier"/"Doublons"
+        accumulent des fichiers plus vieux que le seuil configure."""
+        try:
+            stale = self.organizer.scan_stale_review_folders()
+        except OSError:
+            return
+        if not stale:
+            return
+        labels = {"A verifier": "A verifier", "Doublons": "Doublons"}
+        lines = []
+        for entry in stale:
+            size_mo = entry["total_bytes"] / (1024 * 1024)
+            lines.append(
+                f"- {labels.get(entry['folder'], entry['folder'])} : {entry['count']} fichier(s) "
+                f"({size_mo:.1f} Mo)"
+            )
+        messagebox.showinfo(
+            "Fichiers a trier",
+            "Ces dossiers contiennent des fichiers anciens a trier manuellement "
+            "(aucune suppression automatique n'est effectuee) :\n\n" + "\n".join(lines),
+        )
 
     def _on_close(self):
         self._stop_watch()

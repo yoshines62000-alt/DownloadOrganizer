@@ -508,6 +508,37 @@ class DownloadOrganizer:
             return base / category
         return base / self.categories[category]["target"]
 
+    def scan_stale_review_folders(self, threshold_days: Optional[int] = None) -> list[dict]:
+        """Signale les fichiers qui dorment depuis longtemps dans "A verifier"
+        ou "Doublons" sans jamais rien supprimer ni deplacer : ces deux
+        dossiers accumulent des fichiers que l'utilisateur doit trier
+        manuellement, et rien ne l'avertit jamais s'ils s'y entassent.
+        Retourne une liste (une entree par dossier non vide parmi les deux),
+        chacune avec le nombre de fichiers et la taille totale en octets."""
+        if threshold_days is None:
+            threshold_days = self.config.get("old_file_threshold_days", OLD_FILE_THRESHOLD_DAYS)
+        cutoff = time.time() - threshold_days * 86400
+        results = []
+        for category in (OLD_FILES_TARGET, DUPLICATES_TARGET):
+            folder = self._target_dir_for_category(category)
+            if not folder.is_dir():
+                continue
+            count = 0
+            total_bytes = 0
+            for entry in folder.rglob("*"):
+                if not entry.is_file():
+                    continue
+                try:
+                    stat = entry.stat()
+                except OSError:
+                    continue
+                if stat.st_mtime <= cutoff:
+                    count += 1
+                    total_bytes += stat.st_size
+            if count:
+                results.append({"folder": category, "count": count, "total_bytes": total_bytes})
+        return results
+
     @staticmethod
     def _file_hash(path: Path, cache: Optional[dict] = None) -> Optional[str]:
         """Hash SHA-256 du contenu d'un fichier, en flux (pas de lecture

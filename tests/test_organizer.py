@@ -827,6 +827,83 @@ class OrganizerTestCase(unittest.TestCase):
         self.assertNotIn(str(self.target), content)
         self.assertIn("Documents", content)  # chemin relatif toujours lisible
 
+    # -- rappel de nettoyage pour dossiers anciens ------------------------
+
+    def _age_file(self, path: Path, days: float):
+        old_time = time.time() - days * 86400
+        os.utime(path, (old_time, old_time))
+
+    def test_scan_stale_review_folders_reports_old_files_in_a_verifier(self):
+        old_verifier = self.target / org.OLD_FILES_TARGET
+        old_verifier.mkdir(parents=True)
+        stale = old_verifier / "vieux.bin"
+        stale.write_text("x" * 2048)
+        self._age_file(stale, 200)
+
+        o = self._organizer()
+        result = o.scan_stale_review_folders()
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["folder"], org.OLD_FILES_TARGET)
+        self.assertEqual(result[0]["count"], 1)
+        self.assertEqual(result[0]["total_bytes"], 2048)
+
+    def test_scan_stale_review_folders_reports_old_files_in_doublons(self):
+        doublons = self.target / org.DUPLICATES_TARGET
+        doublons.mkdir(parents=True)
+        stale = doublons / "copie.pdf"
+        stale.write_text("x")
+        self._age_file(stale, 400)
+
+        o = self._organizer()
+        result = o.scan_stale_review_folders()
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["folder"], org.DUPLICATES_TARGET)
+
+    def test_scan_stale_review_folders_ignores_recent_files(self):
+        old_verifier = self.target / org.OLD_FILES_TARGET
+        old_verifier.mkdir(parents=True)
+        recent = old_verifier / "recent.bin"
+        recent.write_text("x")
+        # Pas de _age_file : mtime reste "maintenant", bien sous le seuil.
+
+        o = self._organizer()
+        result = o.scan_stale_review_folders()
+        self.assertEqual(result, [])
+
+    def test_scan_stale_review_folders_returns_empty_list_when_folders_absent(self):
+        o = self._organizer()
+        result = o.scan_stale_review_folders()
+        self.assertEqual(result, [])
+
+    def test_scan_stale_review_folders_respects_custom_threshold(self):
+        old_verifier = self.target / org.OLD_FILES_TARGET
+        old_verifier.mkdir(parents=True)
+        stale = old_verifier / "vieux.bin"
+        stale.write_text("x")
+        self._age_file(stale, 10)
+
+        o = self._organizer(old_file_threshold_days=5)
+        result = o.scan_stale_review_folders()
+        self.assertEqual(len(result), 1)
+
+        o_high_threshold = self._organizer(old_file_threshold_days=365)
+        self.assertEqual(o_high_threshold.scan_stale_review_folders(), [])
+
+    def test_scan_stale_review_folders_sums_both_folders_independently(self):
+        old_verifier = self.target / org.OLD_FILES_TARGET
+        old_verifier.mkdir(parents=True)
+        doublons = self.target / org.DUPLICATES_TARGET
+        doublons.mkdir(parents=True)
+        for name, folder in (("a.bin", old_verifier), ("b.bin", old_verifier), ("c.pdf", doublons)):
+            f = folder / name
+            f.write_text("x")
+            self._age_file(f, 150)
+
+        o = self._organizer()
+        result = {entry["folder"]: entry["count"] for entry in o.scan_stale_review_folders()}
+        self.assertEqual(result[org.OLD_FILES_TARGET], 2)
+        self.assertEqual(result[org.DUPLICATES_TARGET], 1)
+
 
 if __name__ == "__main__":
     unittest.main()
