@@ -1,5 +1,10 @@
 # Nettoyeur intelligent du dossier Téléchargements
 
+[![Dernière version](https://img.shields.io/github/v/release/yoshines62000-alt/DownloadOrganizer?label=derni%C3%A8re%20version)](https://github.com/yoshines62000-alt/DownloadOrganizer/releases/latest)
+[![Téléchargements](https://img.shields.io/github/downloads/yoshines62000-alt/DownloadOrganizer/total?label=t%C3%A9l%C3%A9chargements)](https://github.com/yoshines62000-alt/DownloadOrganizer/releases/latest)
+
+**[⬇️ Télécharger l'exécutable (.exe) — aucune installation requise](https://github.com/yoshines62000-alt/DownloadOrganizer/releases/latest)**
+
 Outil qui analyse le dossier `Téléchargements` et range automatiquement les
 fichiers par catégorie :
 
