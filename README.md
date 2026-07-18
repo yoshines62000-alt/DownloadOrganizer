@@ -123,3 +123,12 @@ Lancer.vbs     # raccourci de lancement double-clic (sans console)
 Lancer.bat     # raccourci de lancement double-clic (avec console, pour debug)
 README.md
 ```
+
+## Soutenir le projet
+
+Cet outil est gratuit et open source. S'il vous fait gagner du temps et que
+vous avez envie d'offrir un café, c'est toujours très apprécié :
+
+☕ **[ko-fi.com/yoshines62000](https://ko-fi.com/yoshines62000)**
+
+Merci à Claude pour l'aide au développement de cet outil !
