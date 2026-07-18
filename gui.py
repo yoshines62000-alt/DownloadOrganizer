@@ -7,8 +7,11 @@ import io
 import os
 import time
 import tkinter as tk
+import webbrowser
 from tkinter import ttk, filedialog, messagebox
 from pathlib import Path
+
+DONATE_URL = "https://ko-fi.com/yoshines62000"
 
 from organizer import (
     DownloadOrganizer,
@@ -188,8 +191,15 @@ class OrganizerGUI(tk.Tk):
         self.history_tree.configure(yscrollcommand=hscroll.set)
         hscroll.pack(fill="y", side="right")
 
+        bottom_bar = ttk.Frame(self)
+        bottom_bar.pack(fill="x", side="bottom")
         self.status_var = tk.StringVar(value="Pret.")
-        ttk.Label(self, textvariable=self.status_var, relief="sunken", anchor="w").pack(fill="x", side="bottom")
+        ttk.Label(bottom_bar, textvariable=self.status_var, relief="sunken", anchor="w").pack(
+            fill="x", side="left", expand=True
+        )
+        donate_label = ttk.Label(bottom_bar, text="☕ Soutenir le projet", foreground="#0645AD", cursor="hand2")
+        donate_label.pack(side="right", padx=8)
+        donate_label.bind("<Button-1>", lambda event: webbrowser.open(DONATE_URL))
 
     # ------------------------------------------------------------------
     # Actions
