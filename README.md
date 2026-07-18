@@ -12,6 +12,13 @@ fichiers par catégorie :
 Aucune suppression automatique n'est effectuée : uniquement des déplacements,
 tous réversibles.
 
+## Démarrage rapide
+
+Double-cliquez sur **[`Lancer.vbs`](Lancer.vbs)** : la fenêtre de l'application
+s'ouvre directement, sans terminal ni ligne de commande. C'est le moyen le
+plus simple de lancer l'outil au quotidien — voir [Lancement
+rapide](#lancement-rapide-double-clic) pour créer un raccourci Bureau.
+
 ## Fonctionnalités
 
 - **Mode simulation** : prévisualise les déplacements sans toucher aux fichiers.
@@ -43,16 +50,26 @@ python -m venv .venv
 
 ### Lancement rapide (double-clic)
 
-Double-cliquez simplement sur **`Lancer.vbs`** : la fenêtre de l'application
-s'ouvre directement, sans console. Vous pouvez créer un raccourci vers ce
-fichier sur le Bureau pour un accès encore plus rapide (clic droit sur
-`Lancer.vbs` → Envoyer vers → Bureau (créer un raccourci)).
+Double-cliquez simplement sur **[`Lancer.vbs`](Lancer.vbs)** : la fenêtre de
+l'application s'ouvre directement, sans console. Aucune installation ni
+commande à taper.
+
+Pour un accès encore plus rapide, créez un raccourci sur le Bureau :
+
+1. Clic droit sur `Lancer.vbs` → **Envoyer vers** → **Bureau (créer un
+   raccourci)**.
+2. (Optionnel) Renommez le raccourci, par exemple « Nettoyeur Téléchargements ».
+3. (Optionnel) Clic droit sur le raccourci → **Propriétés** → **Changer
+   d'icône...** pour lui donner une icône personnalisée.
+
+Vous pouvez aussi épingler ce raccourci à la barre des tâches ou au menu
+Démarrer pour un accès en un clic.
 
 Si `Lancer.vbs` ne fonctionne pas (Python introuvable, etc.), utilisez
-`Lancer.bat` à la place : il ouvre une console qui affiche les éventuelles
-erreurs.
+**[`Lancer.bat`](Lancer.bat)** à la place : il ouvre une console qui affiche
+les éventuelles erreurs, utile pour diagnostiquer un problème.
 
-### Interface graphique en ligne de commande
+### Lancer depuis Python (sans le raccourci)
 
 ```bash
 python organizer.py --gui
@@ -102,5 +119,7 @@ l'interface graphique.
 ```
 organizer.py   # logique métier + CLI
 gui.py         # interface graphique Tkinter
+Lancer.vbs     # raccourci de lancement double-clic (sans console)
+Lancer.bat     # raccourci de lancement double-clic (avec console, pour debug)
 README.md
 ```
