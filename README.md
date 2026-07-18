@@ -165,6 +165,25 @@ l'interface graphique. L'historique des lots réels est dans
 `~/.download_organizer/reports/`, et le journal d'activité dans
 `~/.download_organizer/app.log`.
 
+## Créer un exécutable autonome (.exe)
+
+Pour distribuer l'outil sans que le destinataire ait besoin d'installer
+Python, un exécutable Windows autonome peut être généré avec
+[PyInstaller](https://pyinstaller.org/) :
+
+```bash
+python -m pip install pyinstaller
+python -m PyInstaller NettoyeurTelechargements.spec
+```
+
+L'exécutable est produit dans `dist/NettoyeurTelechargements.exe` (~11 Mo,
+fichier unique, sans console). Le fichier `.spec` du dépôt fixe la
+configuration de build (mode fenêtré, un seul fichier) pour un résultat
+reproductible — pas besoin de refaire `pyinstaller gui.py` à la main.
+
+Les dossiers `build/` et `dist/` générés par PyInstaller ne sont pas suivis
+par Git (voir `.gitignore`) : à regénérer localement à chaque fois.
+
 ## Tests
 
 Une suite de tests automatisés couvre en priorité la garantie centrale de
@@ -179,11 +198,12 @@ python -m unittest tests.test_organizer -v
 ## Structure du projet
 
 ```
-organizer.py         # logique métier + CLI
-gui.py                # interface graphique Tkinter
-tests/test_organizer.py  # tests automatises
-Lancer.vbs            # raccourci de lancement double-clic (sans console)
-Lancer.bat            # raccourci de lancement double-clic (avec console, pour debug)
+organizer.py                     # logique métier + CLI
+gui.py                           # interface graphique Tkinter
+tests/test_organizer.py          # tests automatises
+Lancer.vbs                       # raccourci de lancement double-clic (sans console)
+Lancer.bat                       # raccourci de lancement double-clic (avec console, pour debug)
+NettoyeurTelechargements.spec    # configuration de build PyInstaller (.exe autonome)
 README.md
 ```
 
