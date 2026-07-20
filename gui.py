@@ -24,6 +24,7 @@ from organizer import (
     load_history,
     purge_history,
     export_html_report,
+    BATCH_STATUS_LABELS,
     APP_DIR,
     DUPLICATES_TARGET,
     DEFAULT_WATCH_INTERVAL_SECONDS,
@@ -258,6 +259,7 @@ class OrganizerGUI(tk.Tk):
         hscroll = ttk.Scrollbar(history_frame, orient="vertical", command=self.history_tree.yview)
         self.history_tree.configure(yscrollcommand=hscroll.set)
         hscroll.pack(fill="y", side="right")
+        self.history_tree.bind("<Double-1>", lambda event: self._show_batch_detail())
 
         bottom_bar = ttk.Frame(self)
         bottom_bar.pack(fill="x", side="bottom")
@@ -735,6 +737,70 @@ class OrganizerGUI(tk.Tk):
         # message, jamais traites silencieusement.
         out = self.organizer.undo_batch_at(int(selection[0]))
         self._show_undo_outcome(out)
+
+    def _show_batch_detail(self):
+        """Ouvre le detail d'un lot de l'historique (double-clic) : chaque
+        fichier traite avec sa categorie, sa destination, sa raison et son
+        statut reel - y compris pour un lot simule ou (partiellement)
+        annule, puisque export_html_report accepte deja n'importe quel
+        dict de lot et affiche le statut reel de chaque entree plutot que
+        de pretendre que tout a ete "Deplace"."""
+        selection = self.history_tree.selection()
+        if not selection:
+            return
+        # Meme mapping iid -> index absolu que _undo_selected_batch : la
+        # position visuelle ne correspond jamais au bon lot une fois
+        # l'affichage inverse/tronque (voir _refresh_history_view).
+        history = load_history()
+        index = int(selection[0])
+        if index < 0 or index >= len(history):
+            messagebox.showinfo("Detail du lot", "Ce lot n'existe plus dans l'historique.")
+            return
+        batch = history[index]
+
+        dialog = tk.Toplevel(self)
+        dialog.title(f"Detail du lot - {batch.get('timestamp', '')}")
+        dialog.transient(self)
+        dialog.grab_set()
+        dialog.geometry("820x420")
+
+        columns = ("fichier", "categorie", "destination", "raison", "statut", "erreur")
+        tree = ttk.Treeview(dialog, columns=columns, show="headings", height=15)
+        for col, label, width in [
+            ("fichier", "Fichier", 140),
+            ("categorie", "Categorie", 100),
+            ("destination", "Destination", 260),
+            ("raison", "Raison", 180),
+            ("statut", "Statut", 90),
+            ("erreur", "Erreur", 100),
+        ]:
+            tree.heading(col, text=label)
+            tree.column(col, width=width, anchor="w")
+        tree.pack(fill="both", expand=True, padx=10, pady=(10, 5))
+        scroll = ttk.Scrollbar(dialog, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=scroll.set)
+
+        for move in batch["moves"]:
+            status_label = BATCH_STATUS_LABELS.get(move.get("status"), move.get("status", ""))
+            tree.insert("", "end", values=(
+                Path(move["source"]).name, move.get("category", ""), move.get("destination", ""),
+                move.get("reason", ""), status_label, move.get("error", ""),
+            ))
+
+        def export_this_batch():
+            reports_dir = APP_DIR / "reports"
+            reports_dir.mkdir(parents=True, exist_ok=True)
+            timestamp_slug = batch.get("timestamp", time.strftime("%Y%m%d-%H%M%S")).replace(":", "").replace(" ", "-")
+            path = reports_dir / f"rapport-{timestamp_slug}.html"
+            base_dir = Path(self.base_target_var.get().strip()) if self.base_target_var.get().strip() else None
+            export_html_report(batch, path, base_dir=base_dir)
+            if messagebox.askyesno("Rapport exporte", f"Rapport enregistre dans :\n{path}\n\nL'ouvrir maintenant ?", parent=dialog):
+                os.startfile(str(path))
+
+        buttons = ttk.Frame(dialog)
+        buttons.pack(fill="x", padx=10, pady=(0, 10))
+        ttk.Button(buttons, text="Exporter ce rapport (HTML)", command=export_this_batch).pack(side="left")
+        ttk.Button(buttons, text="Fermer", command=dialog.destroy).pack(side="right")
 
     def _selective_undo_dialog(self):
         history = load_history()

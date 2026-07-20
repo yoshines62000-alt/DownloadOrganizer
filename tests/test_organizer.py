@@ -913,6 +913,30 @@ class OrganizerTestCase(unittest.TestCase):
         self.assertNotIn(str(self.target), content)
         self.assertIn("Documents", content)  # chemin relatif toujours lisible
 
+    def test_export_html_report_reflects_real_status_of_a_simulated_batch(self):
+        # Un lot simule ne doit jamais afficher "Deplace" (statut reel) :
+        # le libelle doit refleter le vrai statut de chaque entree,
+        # y compris pour un lot re-exporte depuis le detail de l'historique.
+        self._write("a.pdf")
+        o = self._organizer()
+        batch = o.execute(o.plan(), simulate=True)
+        report_path = self.tmp / "rapport_simule.html"
+        org.export_html_report(batch, report_path)
+        content = report_path.read_text(encoding="utf-8")
+        self.assertIn("Simule", content)
+        self.assertNotIn("<td>Deplace</td>", content)
+
+    def test_export_html_report_reflects_real_status_of_an_undone_batch(self):
+        self._write("a.pdf", "contenu")
+        o = self._organizer()
+        o.execute(o.plan(), simulate=False)
+        o.undo_last_batch()
+        history = org.load_history()
+        report_path = self.tmp / "rapport_annule.html"
+        org.export_html_report(history[0], report_path)
+        content = report_path.read_text(encoding="utf-8")
+        self.assertIn("Annule (undo)", content)
+
     # -- rappel de nettoyage pour dossiers anciens ------------------------
 
     def _age_file(self, path: Path, days: float):

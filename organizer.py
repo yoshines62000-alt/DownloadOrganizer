@@ -1009,6 +1009,19 @@ class DownloadOrganizer:
 # Rapport de session (transparence : explique chaque decision prise)
 # ---------------------------------------------------------------------------
 
+# Libelles lisibles des statuts d'entree de lot, partages entre le rapport
+# HTML (export_html_report) et le detail de lot affiche dans la GUI
+# (gui.py, _show_batch_detail) - pour ne jamais avoir deux formulations
+# differentes du meme statut selon l'endroit ou on le consulte.
+BATCH_STATUS_LABELS = {
+    "deplace": "Deplace",
+    "erreur": "Erreur",
+    "annule": "Annule (undo)",
+    "annulation_impossible": "Annulation impossible",
+    "planifie": "Simule",
+}
+
+
 def export_html_report(batch: dict, path: Path, base_dir: Optional[Path] = None) -> None:
     """Ecrit un rapport HTML autonome listant chaque fichier traite lors d'un
     lot reel, avec sa categorie, sa destination et la raison du classement,
@@ -1021,13 +1034,7 @@ def export_html_report(batch: dict, path: Path, base_dir: Optional[Path] = None)
     utile a la comprehension du rapport."""
     rows = []
     for m in batch["moves"]:
-        status_label = {
-            "deplace": "Deplace",
-            "erreur": "Erreur",
-            "annule": "Annule (undo)",
-            "annulation_impossible": "Annulation impossible",
-            "planifie": "Simule",
-        }.get(m.get("status"), m.get("status", ""))
+        status_label = BATCH_STATUS_LABELS.get(m.get("status"), m.get("status", ""))
         destination_display = m.get("destination", "")
         if base_dir is not None and destination_display:
             try:
