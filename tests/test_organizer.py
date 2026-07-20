@@ -93,6 +93,29 @@ class OrganizerTestCase(unittest.TestCase):
         self.assertTrue(out["errors"])
         self.assertEqual((self.downloads / "a.pdf").read_text(), "NOUVEAU FICHIER")
 
+    def test_execute_does_not_overwrite_destination_that_appeared_after_plan(self):
+        # Regression trouvee a l'audit : contrairement a _attempt_restore_entry
+        # (annulation), execute() ne reverifiait jamais que move.destination
+        # n'existait pas juste avant le shutil.move reel. Si un fichier
+        # apparait a la destination planifiee entre plan() et execute() (une
+        # fenetre potentiellement large en Mode Veille), shutil.move
+        # l'ecrasait silencieusement.
+        self._write("a.pdf", "original")
+        o = self._organizer()
+        result = o.plan()
+
+        dest = result.moves[0].destination
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text("fichier apparu entre plan() et execute()")
+
+        batch = o.execute(result, simulate=False)
+
+        self.assertEqual(dest.read_text(), "fichier apparu entre plan() et execute()")
+        self.assertTrue((self.downloads / "a.pdf").exists())
+        self.assertEqual((self.downloads / "a.pdf").read_text(), "original")
+        self.assertEqual(batch["moves"][0]["status"], "erreur")
+        self.assertIn("existe deja", batch["moves"][0]["error"])
+
     def test_same_batch_collision_does_not_overwrite(self):
         # Deux fichiers sources distincts qui, sans reservation en memoire,
         # se verraient attribuer la meme destination "dedupliquee".
@@ -556,11 +579,40 @@ class OrganizerTestCase(unittest.TestCase):
         org.HISTORY_FILE.write_text("pas du JSON", encoding="utf-8")
         self.assertEqual(org.load_history(), [])
 
+    def test_video_files_are_routed_to_builtin_videos_category(self):
+        # Contenu distinct par fichier : un contenu identique ("x" par
+        # defaut) ferait passer tous ces fichiers pour des doublons entre
+        # eux, ce qui n'est pas ce que ce test verifie.
+        names = ("film.mp4", "serie.mkv", "clip.avi", "vieux.wmv", "web.webm", "quicktime.mov")
+        for index, name in enumerate(names):
+            self._write(name, content=f"contenu-{index}")
+        o = self._organizer()
+        result = o.plan()
+        by_name = {Path(m.source).name: m for m in result.moves}
+        for name in names:
+            self.assertEqual(by_name[name].category, "Videos")
+            self.assertEqual(by_name[name].destination.parent, self.target / "Videos")
+
+    def test_audio_files_are_routed_to_builtin_audio_category(self):
+        names = ("chanson.mp3", "album.flac", "voix.wav", "piste.aac", "son.ogg", "vieux.wma", "livre.m4a")
+        for index, name in enumerate(names):
+            self._write(name, content=f"contenu-{index}")
+        o = self._organizer()
+        result = o.plan()
+        by_name = {Path(m.source).name: m for m in result.moves}
+        for name in names:
+            self.assertEqual(by_name[name].category, "Audio")
+            self.assertEqual(by_name[name].destination.parent, self.target / "Audio")
+
     def test_custom_category_routes_matching_files_without_code_changes(self):
+        # Extension ".mid" volontairement choisie car non revendiquee par
+        # aucune categorie integree (contrairement a ".mp3"/".flac", desormais
+        # couvertes par la categorie integree "Audio" - voir
+        # test_builtin_category_extension_always_wins_over_custom_category).
         o = self._organizer(custom_categories=[
-            {"name": "Musique", "extensions": [".mp3", ".flac"], "target": "Musique"},
+            {"name": "Musique", "extensions": [".mid", ".xm"], "target": "Musique"},
         ])
-        self._write("chanson.mp3")
+        self._write("chanson.mid")
         result = o.plan()
         moved = [m for m in result.moves if m.category == "Musique"]
         self.assertEqual(len(moved), 1)
@@ -657,11 +709,13 @@ class OrganizerTestCase(unittest.TestCase):
         self.assertEqual(moved[0].category, "Factures")
 
     def test_custom_category_without_name_patterns_behaves_exactly_as_before(self):
+        # ".mid" plutot que ".mp3" : voir
+        # test_custom_category_routes_matching_files_without_code_changes.
         o = self._organizer(custom_categories=[
-            {"name": "Musique", "extensions": [".mp3"], "target": "Musique"},
+            {"name": "Musique", "extensions": [".mid"], "target": "Musique"},
         ])
         self.assertEqual(o.categories["Musique"].get("name_patterns"), [])
-        self._write("chanson.mp3")
+        self._write("chanson.mid")
         result = o.plan()
         moved = [m for m in result.moves if m.category == "Musique"]
         self.assertEqual(len(moved), 1)

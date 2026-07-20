@@ -7,6 +7,8 @@ import csv
 import io
 import json
 import os
+import queue
+import threading
 import time
 import tkinter as tk
 import webbrowser
@@ -59,6 +61,7 @@ class OrganizerGUI(tk.Tk):
         self.watch_active = False
         self._watch_after_id = None
         self._watch_last_signature = None
+        self._stale_review_after_id = None
 
         self._build_widgets()
         self._refresh_history_view()
@@ -68,7 +71,12 @@ class OrganizerGUI(tk.Tk):
         # Verification silencieuse au demarrage, jamais bloquante : ne
         # propose jamais de suppression automatique, se contente d'informer
         # si "A verifier"/"Doublons" accumulent des fichiers a trier.
-        self.after(200, self._check_stale_review_folders)
+        # L'id est garde dans le meme attribut que celui du polling qui
+        # suivra (_poll_stale_review_queue) : a tout instant, cet attribut
+        # reflete le prochain callback en attente pour ce flux, ce qui
+        # permet a _on_close de l'annuler proprement quel que soit l'etat
+        # d'avancement (delai initial ou polling en cours).
+        self._stale_review_after_id = self.after(200, self._check_stale_review_folders)
 
     # ------------------------------------------------------------------
     # Construction de l'UI
@@ -115,9 +123,11 @@ class OrganizerGUI(tk.Tk):
 
         excl_frame.columnconfigure(1, weight=1)
 
-        # Categories personnalisees (au-dela des 4 categories integrees :
-        # PDF, Images, Archives, Installateurs - celles-ci gardent leur
-        # detection par signature de fichier et ne sont pas modifiables ici)
+        # Categories personnalisees (au-dela des categories integrees :
+        # PDF, Images, Archives, Installateurs, Videos, Audio - celles-ci
+        # gardent leur comportement integre - dont, pour les quatre
+        # premieres, la detection par signature de fichier - et ne sont
+        # pas modifiables ici)
         cat_frame = ttk.LabelFrame(self, text="Categories personnalisees", padding=10)
         cat_frame.pack(fill="x", padx=10, pady=(0, 10))
 
@@ -305,9 +315,25 @@ class OrganizerGUI(tk.Tk):
             )
             return None
 
+        try:
+            watch_interval = int(self.watch_interval_var.get().strip())
+            if watch_interval < 5:
+                raise ValueError
+        except ValueError:
+            messagebox.showerror(
+                "Valeur invalide",
+                "L'intervalle de veille doit etre un nombre entier d'au moins 5 secondes.",
+            )
+            return None
+
         self.config_data["downloads_dir"] = self.downloads_var.get().strip()
         self.config_data["base_target_dir"] = self.base_target_var.get().strip()
         self.config_data["old_file_threshold_days"] = age_days
+        # Sans cette ligne, modifier l'intervalle de veille puis "Enregistrer la
+        # configuration" (Ctrl+S) SANS jamais cliquer "Activer la veille" perdait
+        # silencieusement la nouvelle valeur : seul _start_watch l'ecrivait dans
+        # config_data (bug trouve a l'audit).
+        self.config_data["watch_interval_seconds"] = watch_interval
         self.config_data["exclusions"] = {
             "extensions": split_csv(self.excl_ext_var.get()),
             "filenames": split_csv(self.excl_names_var.get()),
@@ -658,11 +684,49 @@ class OrganizerGUI(tk.Tk):
     def _check_stale_review_folders(self):
         """Verification silencieuse au demarrage : informe sans jamais
         bloquer ni proposer de suppression si "A verifier"/"Doublons"
-        accumulent des fichiers plus vieux que le seuil configure."""
+        accumulent des fichiers plus vieux que le seuil configure.
+
+        Le scan (parcours recursif + stat() de chaque fichier, voir
+        organizer.scan_stale_review_folders) peut prendre plusieurs
+        secondes si ces dossiers contiennent des milliers de fichiers :
+        execute directement ici, il gelait tout le thread principal Tk
+        (donc toute l'appli) au demarrage le temps du scan (bug trouve a
+        l'audit). Deporte sur un thread separe, avec le resultat remonte
+        via une queue.Queue interrogee par polling depuis self.after() -
+        meme pattern que le scan en arriere-plan de PhotoTri - pour ne
+        jamais bloquer l'interface."""
+        # Le callback self.after() qui a mene a cet appel a deja ete
+        # consomme : plus rien n'est en attente tant que le polling
+        # ci-dessous n'a pas reprogramme sa propre echeance.
+        self._stale_review_after_id = None
+        organizer = self.organizer
+        result_queue: "queue.Queue" = queue.Queue()
+
+        def worker():
+            try:
+                stale = organizer.scan_stale_review_folders()
+            except Exception:  # noqa: BLE001 - garde-fou du thread de fond :
+                # une exception non attrapee ici tuerait le thread sans
+                # jamais rien deposer dans la queue, ce qui laisserait le
+                # polling ci-dessous tourner indefiniment sans jamais se
+                # resoudre. Ce scan est purement informatif au demarrage :
+                # en cas d'echec, on se contente de ne rien signaler.
+                stale = []
+            result_queue.put(stale)
+
+        threading.Thread(target=worker, daemon=True).start()
+        self._poll_stale_review_queue(result_queue)
+
+    def _poll_stale_review_queue(self, result_queue: "queue.Queue"):
         try:
-            stale = self.organizer.scan_stale_review_folders()
-        except OSError:
+            stale = result_queue.get_nowait()
+        except queue.Empty:
+            self._stale_review_after_id = self.after(150, self._poll_stale_review_queue, result_queue)
             return
+        self._stale_review_after_id = None
+        self._show_stale_review_result(stale)
+
+    def _show_stale_review_result(self, stale: list) -> None:
         if not stale:
             return
         labels = {"A verifier": "A verifier", "Doublons": "Doublons"}
@@ -681,6 +745,16 @@ class OrganizerGUI(tk.Tk):
 
     def _on_close(self):
         self._stop_watch()
+        # Annule le polling du scan de demarrage s'il est encore en cours
+        # (dossiers "A verifier"/"Doublons" tres volumineux, fermeture
+        # rapide de l'appli) : sans cela, self.after() tente encore
+        # d'invoquer une methode liee a une fenetre deja detruite.
+        if self._stale_review_after_id is not None:
+            try:
+                self.after_cancel(self._stale_review_after_id)
+            except (ValueError, tk.TclError):
+                pass
+            self._stale_review_after_id = None
         try:
             self.destroy()
         except tk.TclError:

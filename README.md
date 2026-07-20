@@ -12,6 +12,8 @@ fichiers par catégorie :
 - **Images** → `Images`
 - **Archives** → `Archives`
 - **Installateurs** → `Installateurs`
+- **Vidéos** → `Videos`
+- **Audio** → `Audio`
 - **Fichiers anciens** (type non reconnu, plus vieux qu'un seuil configurable) → `A verifier`
 - **Doublons de contenu** (détectés par hash, pas seulement par nom) → `Doublons`
 

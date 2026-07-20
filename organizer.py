@@ -3,7 +3,8 @@ Nettoyeur intelligent du dossier Telechargements
 =================================================
 
 Analyse le dossier Telechargements et range automatiquement les fichiers par
-categorie (PDF, Images, Archives, Installateurs, fichiers anciens a verifier).
+categorie (PDF, Images, Archives, Installateurs, Videos, Audio, fichiers
+anciens a verifier).
 
 Fonctions :
   - mode simulation (dry-run) : previsualiser les deplacements sans rien deplacer
@@ -70,6 +71,14 @@ DEFAULT_CATEGORIES = {
     "Installateurs": {
         "extensions": [".exe", ".msi", ".msix", ".pkg", ".dmg", ".apk", ".appimage"],
         "target": "Installateurs",
+    },
+    "Videos": {
+        "extensions": [".mp4", ".mkv", ".avi", ".mov", ".wmv", ".webm"],
+        "target": "Videos",
+    },
+    "Audio": {
+        "extensions": [".mp3", ".flac", ".wav", ".aac", ".ogg", ".wma", ".m4a"],
+        "target": "Audio",
     },
 }
 
@@ -251,10 +260,11 @@ def get_effective_categories(config: dict) -> dict:
     par l'utilisateur (config["custom_categories"]) en un seul dict pret a
     l'emploi {nom: {"extensions": [...], "target": str, "name_patterns": [...]}}.
     Une categorie personnalisee ne peut jamais reutiliser le nom d'une
-    categorie integree (elle serait alors simplement ignoree) - les 4
-    categories de base et leur detection par signature de fichier restent
-    inchangees, seule une extension de la liste est possible via l'ajout de
-    nouvelles categories.
+    categorie integree (elle serait alors simplement ignoree) - les
+    categories de base (et la detection par signature de fichier des
+    quatre d'entre elles qui en beneficient : PDF, Images, Archives,
+    Installateurs) restent inchangees, seule une extension de la liste
+    est possible via l'ajout de nouvelles categories.
 
     `name_patterns` (optionnel, glob via fnmatch) permet de router un
     fichier vers cette categorie d'apres son NOM plutot que sa seule
@@ -492,7 +502,7 @@ class DownloadOrganizer:
 
     def _category_for(self, path: Path) -> Optional[str]:
         # Les regles par motif de nom (categories personnalisees
-        # uniquement - les 4 categories integrees n'en definissent jamais)
+        # uniquement - les categories integrees n'en definissent jamais)
         # sont testees EN PREMIER, avant toute correspondance par extension
         # y compris celle d'une categorie integree : un motif de nom est
         # une regle plus specifique/intentionnelle que la simple extension,
@@ -862,6 +872,27 @@ class DownloadOrganizer:
             if not simulate:
                 try:
                     move.destination.parent.mkdir(parents=True, exist_ok=True)
+                    # Reverification juste avant le deplacement reel : entre plan()
+                    # et execute() (fenetre potentiellement large en Mode Veille, qui
+                    # attend une stabilisation avant de proposer le lot), un fichier a
+                    # pu apparaitre a la destination planifiee. Sans ce garde-fou,
+                    # shutil.move l'ecraserait silencieusement (sur un deplacement
+                    # inter-disque, il retombe sur copy+unlink des que os.rename
+                    # echoue). Meme mecanisme de reverification que
+                    # _attempt_restore_entry pour l'annulation.
+                    if move.destination.exists():
+                        entry["status"] = "erreur"
+                        entry["error"] = (
+                            "un fichier existe deja a cet emplacement (apparu apres la "
+                            "planification) : deplacement annule pour eviter un ecrasement"
+                        )
+                        _ensure_logging_configured()
+                        logger.error(
+                            "Deplacement annule (destination apparue entre plan() et execute()) : %s -> %s",
+                            move.source, move.destination,
+                        )
+                        batch["moves"].append(entry)
+                        continue
                     shutil.move(str(move.source), str(move.destination))
                     entry["status"] = "deplace"
                 except OSError as exc:
