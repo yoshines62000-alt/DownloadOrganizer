@@ -797,7 +797,17 @@ class OrganizerGUI(tk.Tk):
             reports_dir = APP_DIR / "reports"
             reports_dir.mkdir(parents=True, exist_ok=True)
             timestamp_slug = batch.get("timestamp", time.strftime("%Y%m%d-%H%M%S")).replace(":", "").replace(" ", "-")
+            # Le timestamp d'un lot n'a qu'une precision a la seconde : deux
+            # lots partageant le meme timestamp (historique edite a la
+            # main, ou tres rarement deux lots reels dans la meme seconde)
+            # ecraseraient sinon silencieusement le rapport HTML l'un de
+            # l'autre (bug releve a l'audit). Suffixe numerote des qu'un
+            # fichier de ce nom existe deja.
             path = reports_dir / f"rapport-{timestamp_slug}.html"
+            counter = 1
+            while path.exists():
+                path = reports_dir / f"rapport-{timestamp_slug} ({counter}).html"
+                counter += 1
             base_dir = Path(self.base_target_var.get().strip()) if self.base_target_var.get().strip() else None
             export_html_report(batch, path, base_dir=base_dir)
             if messagebox.askyesno("Rapport exporte", f"Rapport enregistre dans :\n{path}\n\nL'ouvrir maintenant ?", parent=dialog):
