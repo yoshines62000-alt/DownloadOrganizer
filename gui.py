@@ -16,7 +16,11 @@ from tkinter import ttk, filedialog, messagebox
 from pathlib import Path
 
 DONATE_URL = "https://ko-fi.com/yoshines62000"
+APP_VERSION = "1.0.7"
+UPDATE_REPO = "yoshines62000-alt/DownloadOrganizer"
+RELEASES_URL = f"https://github.com/{UPDATE_REPO}/releases/latest"
 
+import update_checker
 from organizer import (
     DownloadOrganizer,
     load_config,
@@ -273,6 +277,10 @@ class OrganizerGUI(tk.Tk):
 
         bottom_bar = ttk.Frame(self)
         bottom_bar.pack(fill="x", side="bottom")
+        ttk.Label(bottom_bar, text=f"v{APP_VERSION}", foreground="#666").pack(side="left", padx=(8, 0), pady=4)
+        self.update_status_var = tk.StringVar(value="")
+        self.update_status_label = ttk.Label(bottom_bar, textvariable=self.update_status_var, foreground="#666")
+        self.update_status_label.pack(side="left", padx=(6, 0), pady=4)
         self.status_var = tk.StringVar(value="Pret.")
         ttk.Label(bottom_bar, textvariable=self.status_var, relief="sunken", anchor="w").pack(
             fill="x", side="left", expand=True
@@ -280,6 +288,26 @@ class OrganizerGUI(tk.Tk):
         donate_label = ttk.Label(bottom_bar, text="☕ Soutenir le projet", foreground="#0645AD", cursor="hand2")
         donate_label.pack(side="right", padx=8)
         donate_label.bind("<Button-1>", lambda event: webbrowser.open(DONATE_URL))
+
+        self._update_check_queue = queue.Queue()
+        update_checker.start_update_check(APP_VERSION, UPDATE_REPO, self._update_check_queue)
+        self.after(500, self._poll_update_check)
+
+    def _poll_update_check(self):
+        try:
+            status, tag = self._update_check_queue.get_nowait()
+        except queue.Empty:
+            self.after(500, self._poll_update_check)
+            return
+        if status == "update_available":
+            self.update_status_var.set(f"Mise a jour disponible : {tag} - Telecharger")
+            self.update_status_label.configure(foreground="#0645AD", cursor="hand2")
+            self.update_status_label.bind("<Button-1>", lambda event: webbrowser.open(RELEASES_URL))
+        elif status == "up_to_date":
+            self.update_status_var.set("A jour")
+            self.update_status_label.configure(foreground="#1B7A1B", cursor="")
+        # "check_failed" (hors ligne, GitHub inaccessible...) : on ne
+        # revendique rien plutot que d'afficher a tort "a jour".
 
     # ------------------------------------------------------------------
     # Actions
