@@ -1043,7 +1043,10 @@ def export_html_report(batch: dict, path: Path, base_dir: Optional[Path] = None)
                 pass  # hors de base_dir (rare) : on garde le chemin complet
         rows.append(
             "<tr>"
-            f"<td>{_html_escape(Path(m['source']).name)}</td>"
+            # .get() plutot que m["source"] (bug trouve a l'audit) : un lot
+            # malforme/edite a la main ne doit jamais faire planter tout
+            # l'export d'un rapport pour une seule entree incomplete.
+            f"<td>{_html_escape(Path(m.get('source', '')).name)}</td>"
             f"<td>{_html_escape(m.get('category', ''))}</td>"
             f"<td>{_html_escape(destination_display)}</td>"
             f"<td>{_html_escape(m.get('reason', ''))}</td>"

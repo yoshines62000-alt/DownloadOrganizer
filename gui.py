@@ -782,8 +782,14 @@ class OrganizerGUI(tk.Tk):
 
         for move in batch["moves"]:
             status_label = BATCH_STATUS_LABELS.get(move.get("status"), move.get("status", ""))
+            # .get() plutot que move["source"] (bug trouve a l'audit -
+            # regression du motif deja corrige dans _attempt_restore_entry
+            # pour tolerer une entree d'historique malformee/editee a la
+            # main) : un acces par crochets faisait planter la boucle en
+            # silence (Tk avale l'exception), laissant un dialogue ouvert
+            # sans aucun bouton, recuperable uniquement via la croix OS.
             tree.insert("", "end", values=(
-                Path(move["source"]).name, move.get("category", ""), move.get("destination", ""),
+                Path(move.get("source", "")).name, move.get("category", ""), move.get("destination", ""),
                 move.get("reason", ""), status_label, move.get("error", ""),
             ))
 
@@ -877,7 +883,11 @@ class OrganizerGUI(tk.Tk):
             else:
                 mode = "Reel"
             moved = [m for m in batch["moves"] if m.get("status") in ("deplace", "planifie")]
-            detail = ", ".join(Path(m["source"]).name for m in moved[:5])
+            # .get() plutot que m["source"] (meme correctif que dans
+            # _show_batch_detail/export_html_report) : une entree malformee
+            # ne doit jamais faire planter le rafraichissement de tout
+            # l'onglet Historique.
+            detail = ", ".join(Path(m.get("source", "")).name for m in moved[:5])
             if len(moved) > 5:
                 detail += f", ... (+{len(moved) - 5})"
             # L'iid de chaque ligne est l'index ABSOLU du lot dans history.json :

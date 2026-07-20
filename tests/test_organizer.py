@@ -937,6 +937,21 @@ class OrganizerTestCase(unittest.TestCase):
         content = report_path.read_text(encoding="utf-8")
         self.assertIn("Annule (undo)", content)
 
+    def test_export_html_report_tolerates_a_move_entry_missing_the_source_field(self):
+        # Regression trouvee a l'audit : un acces par crochets (m["source"])
+        # faisait planter tout l'export d'un lot malforme/edite a la main
+        # pour une seule entree incomplete, au lieu de degrader proprement
+        # comme le fait deja _attempt_restore_entry pour ce meme genre
+        # d'entree (voir test_undo_with_malformed_history_entry_does_not_crash).
+        batch = {
+            "timestamp": "2026-01-01 12:00:00",
+            "simulated": False,
+            "moves": [{"category": "PDF", "reason": "extension .pdf", "status": "deplace"}],
+        }
+        report_path = self.tmp / "rapport_source_manquant.html"
+        org.export_html_report(batch, report_path)  # ne doit pas lever
+        self.assertTrue(report_path.exists())
+
     # -- rappel de nettoyage pour dossiers anciens ------------------------
 
     def _age_file(self, path: Path, days: float):
