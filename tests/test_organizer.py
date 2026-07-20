@@ -175,6 +175,73 @@ class OrganizerTestCase(unittest.TestCase):
         self.assertEqual(outcome["undone"], [])
         self.assertFalse((self.downloads / "a.pdf").exists())
 
+    # -- annulation d'un lot quelconque de l'historique --------------------
+
+    def test_undo_batch_at_restores_older_batch_and_leaves_recent_intact(self):
+        self._write("a.pdf", "contenu a")
+        o = self._organizer()
+        o.execute(o.plan(), simulate=False)
+        self._write("b.pdf", "contenu b")
+        o.execute(o.plan(), simulate=False)
+
+        out = o.undo_batch_at(0)
+        self.assertEqual(len(out["undone"]), 1)
+        self.assertEqual(out["errors"], [])
+        self.assertEqual((self.downloads / "a.pdf").read_text(), "contenu a")
+        # Le lot le plus recent n'est pas touche : b.pdf reste range.
+        self.assertFalse((self.downloads / "b.pdf").exists())
+        self.assertTrue((self.target / "Documents" / "PDF" / "b.pdf").exists())
+
+        history = org.load_history()
+        self.assertTrue(history[0].get("undone"))
+        self.assertFalse(history[1].get("undone"))
+
+    def test_undo_batch_at_conflict_does_not_overwrite_nor_mark_batch_undone(self):
+        self._write("a.pdf", "original")
+        o = self._organizer()
+        o.execute(o.plan(), simulate=False)
+        # Un fichier de meme nom reapparait a la source apres le rangement.
+        (self.downloads / "a.pdf").write_text("NOUVEAU FICHIER")
+
+        out = o.undo_batch_at(0)
+        self.assertEqual(out["undone"], [])
+        self.assertTrue(out["errors"])
+        self.assertEqual((self.downloads / "a.pdf").read_text(), "NOUVEAU FICHIER")
+        # Conflit potentiellement resoluble : le lot doit rester retentable.
+        history = org.load_history()
+        self.assertFalse(history[0].get("undone"))
+
+    def test_undo_batch_at_refuses_simulated_batch(self):
+        org.append_batch_to_history({
+            "timestamp": "2026-01-01 12:00:00", "simulated": True,
+            "moves": [{"source": "x.pdf", "destination": "y/x.pdf", "status": "planifie"}],
+        })
+        o = self._organizer()
+        out = o.undo_batch_at(0)
+        self.assertEqual(out["undone"], [])
+        self.assertEqual(out["errors"], [])
+        self.assertIn("simulation", out["message"])
+
+    def test_undo_batch_at_refuses_already_undone_batch(self):
+        self._write("a.pdf", "contenu")
+        o = self._organizer()
+        o.execute(o.plan(), simulate=False)
+        first = o.undo_last_batch()
+        self.assertEqual(len(first["undone"]), 1)
+
+        out = o.undo_batch_at(0)
+        self.assertEqual(out["undone"], [])
+        self.assertEqual(out["errors"], [])
+        self.assertIn("deja", out["message"])
+
+    def test_undo_batch_at_out_of_range_index_returns_message(self):
+        o = self._organizer()
+        for bad_index in (-1, 0, 42):
+            out = o.undo_batch_at(bad_index)
+            self.assertEqual(out["undone"], [])
+            self.assertEqual(out["errors"], [])
+            self.assertIn("introuvable", out["message"])
+
     # -- validations de dossiers -------------------------------------------
 
     def test_empty_downloads_dir_is_rejected(self):

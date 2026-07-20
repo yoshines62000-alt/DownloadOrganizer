@@ -240,6 +240,9 @@ class OrganizerGUI(tk.Tk):
         self.history_summary_var = tk.StringVar(value="")
         ttk.Label(hist_toolbar, textvariable=self.history_summary_var, foreground="#555").pack(side="left")
         ttk.Button(hist_toolbar, text="Purger l'historique...", command=self._purge_history_dialog).pack(side="right")
+        ttk.Button(hist_toolbar, text="Annuler le lot selectionne...", command=self._undo_selected_batch).pack(
+            side="right", padx=(0, 6)
+        )
 
         hist_columns = ("date", "mode", "nb", "detail")
         self.history_tree = ttk.Treeview(history_frame, columns=hist_columns, show="headings", height=15)
@@ -691,6 +694,9 @@ class OrganizerGUI(tk.Tk):
             return
 
         out = self.organizer.undo_last_batch()
+        self._show_undo_outcome(out)
+
+    def _show_undo_outcome(self, out: dict):
         undone = out.get("undone", [])
         errors = out.get("errors", [])
 
@@ -710,6 +716,25 @@ class OrganizerGUI(tk.Tk):
         if errors:
             messagebox.showwarning("Annulation partielle", "\n".join(f"{p}: {e}" for p, e in errors))
         self._refresh_history_view()
+
+    def _undo_selected_batch(self):
+        selection = self.history_tree.selection()
+        if not selection:
+            messagebox.showinfo("Annuler un lot", "Selectionnez d'abord un lot dans l'historique.")
+            return
+        confirm = messagebox.askyesno(
+            "Annuler le lot selectionne",
+            "Voulez-vous vraiment annuler ce lot de deplacements "
+            "(les fichiers seront remis dans le dossier Telechargements) ?",
+        )
+        if not confirm:
+            return
+        # L'iid de la ligne EST l'index absolu du lot dans history.json
+        # (voir _refresh_history_view) : les cas invalides (lot simule, deja
+        # annule, purge entre-temps) sont refuses par undo_batch_at avec un
+        # message, jamais traites silencieusement.
+        out = self.organizer.undo_batch_at(int(selection[0]))
+        self._show_undo_outcome(out)
 
     def _selective_undo_dialog(self):
         history = load_history()
@@ -776,7 +801,7 @@ class OrganizerGUI(tk.Tk):
         # l'interface pour peu d'interet (l'historique reste consultable en
         # totalite via export/purge, juste pas tout affiche a l'ecran).
         displayed = list(reversed(history))[: self.HISTORY_DISPLAY_LIMIT]
-        for batch in displayed:
+        for offset, batch in enumerate(displayed):
             if batch.get("simulated"):
                 mode = "Simulation"
             elif batch.get("undone"):
@@ -789,7 +814,14 @@ class OrganizerGUI(tk.Tk):
             detail = ", ".join(Path(m["source"]).name for m in moved[:5])
             if len(moved) > 5:
                 detail += f", ... (+{len(moved) - 5})"
-            self.history_tree.insert("", "end", values=(batch["timestamp"], mode, len(moved), detail))
+            # L'iid de chaque ligne est l'index ABSOLU du lot dans history.json :
+            # l'affichage etant inverse et tronque a HISTORY_DISPLAY_LIMIT, une
+            # position visuelle ne permettrait jamais de retrouver le bon lot
+            # au moment d'agir dessus (annulation, detail).
+            self.history_tree.insert(
+                "", "end", iid=str(total - 1 - offset),
+                values=(batch["timestamp"], mode, len(moved), detail),
+            )
 
         if total > len(displayed):
             self.history_summary_var.set(f"Affichage des {len(displayed)} lots les plus recents sur {total} au total.")

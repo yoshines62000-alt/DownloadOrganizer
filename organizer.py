@@ -926,60 +926,22 @@ class DownloadOrganizer:
         except OSError:
             return False, True
 
-    def undo_last_batch(self) -> dict:
-        history = load_history()
-        real_batches = [b for b in history if not b.get("simulated") and not b.get("undone")]
-        if not real_batches:
-            return {"undone": [], "message": "Aucun lot a annuler."}
-
-        last_batch = real_batches[-1]
+    def _restore_batch_entries(self, history: list, batch: dict, source_paths=None) -> dict:
+        """Base commune des trois variantes d'annulation (dernier lot,
+        selection de fichiers du dernier lot, lot quelconque de
+        l'historique) : restaure chaque entree "deplace" de `batch` (ou
+        seulement celles dont la source figure dans `source_paths`), puis
+        sauvegarde l'historique complet - `batch` doit etre une reference
+        vers un element de `history`, jamais une copie, sans quoi les
+        statuts mis a jour ne seraient pas persistes."""
+        if source_paths is not None:
+            source_paths = {str(p) for p in source_paths}
         undone = []
         errors = []
-        pending = False  # au moins une entree "deplace" restante non resolue
-        for entry in last_batch["moves"]:
+        for entry in batch["moves"]:
             if entry.get("status") != "deplace":
                 continue
-            dest_str, src_str = entry.get("destination"), entry.get("source")
-            success, retryable = self._attempt_restore_entry(entry)
-            if success:
-                undone.append(entry)
-            else:
-                reason = {
-                    "annulation_impossible": (
-                        "entree d'historique incomplete, annulation impossible pour ce fichier"
-                        if not dest_str or not src_str else "fichier introuvable (deja deplace ou renomme)"
-                    ),
-                }.get(entry["status"], "un fichier existe deja a cet emplacement, annulation ignoree pour ce fichier")
-                errors.append((dest_str or str(entry), reason))
-                pending = pending or retryable
-
-        # Le lot n'est marque comme definitivement annule que si toutes ses
-        # entrees ont ete traitees avec succes ou jugees irrecuperables ; s'il
-        # reste des conflits potentiellement resolubles (fichier en place a la
-        # destination d'origine), on le laisse disponible pour un nouvel essai.
-        if not pending:
-            last_batch["undone"] = True
-        save_history(history)
-
-        return {"undone": undone, "errors": errors}
-
-    def undo_selected_files(self, source_paths) -> dict:
-        """Comme undo_last_batch, mais ne restaure que les fichiers dont le
-        chemin source d'origine (avant deplacement) figure dans
-        `source_paths` - les autres entrees du dernier lot restent
-        deplacees, disponibles pour une annulation ulterieure (totale ou
-        partielle d'un autre sous-ensemble)."""
-        source_paths = {str(p) for p in source_paths}
-        history = load_history()
-        real_batches = [b for b in history if not b.get("simulated") and not b.get("undone")]
-        if not real_batches:
-            return {"undone": [], "errors": [], "message": "Aucun lot a annuler."}
-
-        last_batch = real_batches[-1]
-        undone = []
-        errors = []
-        for entry in last_batch["moves"]:
-            if entry.get("status") != "deplace" or entry.get("source") not in source_paths:
+            if source_paths is not None and entry.get("source") not in source_paths:
                 continue
             dest_str, src_str = entry.get("destination"), entry.get("source")
             success, _retryable = self._attempt_restore_entry(entry)
@@ -994,14 +956,53 @@ class DownloadOrganizer:
                 )
                 errors.append((dest_str or str(entry), reason))
 
-        # Le lot entier n'est marque annule que si PLUS AUCUNE entree n'est
-        # encore a l'etat "deplace" (annulation selective ou non) - sinon
-        # les fichiers non selectionnes doivent rester annulables plus tard.
-        if not any(e.get("status") == "deplace" for e in last_batch["moves"]):
-            last_batch["undone"] = True
+        # Le lot n'est marque definitivement annule que s'il ne reste PLUS
+        # AUCUNE entree a l'etat "deplace" : une annulation selective doit
+        # laisser les fichiers non selectionnes annulables plus tard, et un
+        # conflit potentiellement resoluble (fichier reapparu a l'emplacement
+        # d'origine) doit laisser le lot disponible pour un nouvel essai.
+        if not any(e.get("status") == "deplace" for e in batch["moves"]):
+            batch["undone"] = True
         save_history(history)
 
         return {"undone": undone, "errors": errors}
+
+    def undo_last_batch(self) -> dict:
+        history = load_history()
+        real_batches = [b for b in history if not b.get("simulated") and not b.get("undone")]
+        if not real_batches:
+            return {"undone": [], "message": "Aucun lot a annuler."}
+        return self._restore_batch_entries(history, real_batches[-1])
+
+    def undo_selected_files(self, source_paths) -> dict:
+        """Comme undo_last_batch, mais ne restaure que les fichiers dont le
+        chemin source d'origine (avant deplacement) figure dans
+        `source_paths` - les autres entrees du dernier lot restent
+        deplacees, disponibles pour une annulation ulterieure (totale ou
+        partielle d'un autre sous-ensemble)."""
+        history = load_history()
+        real_batches = [b for b in history if not b.get("simulated") and not b.get("undone")]
+        if not real_batches:
+            return {"undone": [], "errors": [], "message": "Aucun lot a annuler."}
+        return self._restore_batch_entries(history, real_batches[-1], source_paths=source_paths)
+
+    def undo_batch_at(self, history_index: int) -> dict:
+        """Annule un lot QUELCONQUE de l'historique, designe par son index
+        absolu dans history.json (pas par sa position dans un affichage,
+        qui peut etre inverse ou tronque). Un lot ancien peut entrer en
+        conflit avec des deplacements posterieurs (fichier recree a la
+        source depuis) : _attempt_restore_entry refuse alors d'ecraser et
+        l'erreur est simplement remontee, le lot restant retentable."""
+        history = load_history()
+        if not 0 <= history_index < len(history):
+            return {"undone": [], "errors": [], "message": "Lot introuvable dans l'historique."}
+        batch = history[history_index]
+        if batch.get("simulated"):
+            return {"undone": [], "errors": [],
+                    "message": "Ce lot est une simulation : aucun fichier n'a ete deplace, rien a annuler."}
+        if batch.get("undone"):
+            return {"undone": [], "errors": [], "message": "Ce lot a deja ete entierement annule."}
+        return self._restore_batch_entries(history, batch)
 
 
 # ---------------------------------------------------------------------------
