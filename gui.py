@@ -52,8 +52,18 @@ class OrganizerGUI(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Nettoyeur intelligent - Telechargements")
-        self.geometry("880x600")
-        self.minsize(760, 520)
+        # Taille par defaut mesuree empiriquement pour que les boutons
+        # d'action, au moins un onglet (Apercu/Historique) et la barre de
+        # statut soient visibles des le premier lancement sur un ecran
+        # 1920x1080 standard - le contenu complet reclame ~1123x1100px
+        # (winfo_reqwidth()/winfo_reqheight()), ce qui depasse la hauteur
+        # utile d'un ecran 1080p ; 1150x850 affiche tout l'essentiel sans
+        # deborder de l'ecran, le reste (categories personnalisees, onglets)
+        # restant accessible par ascenseur/redimensionnement. minsize
+        # respecte la largeur minimale requise (~1123px) pour eviter que la
+        # mise en page horizontale ne perturbe l'agencement vertical.
+        self.geometry("1150x850")
+        self.minsize(1130, 700)
 
         self.config_data = load_config()
         self.organizer = DownloadOrganizer(self.config_data)
@@ -225,6 +235,31 @@ class OrganizerGUI(tk.Tk):
         ttk.Button(btn_frame_2, text="Exporter la configuration...", command=self._export_config_dialog).pack(side="left", padx=6)
         ttk.Button(btn_frame_2, text="Importer une configuration...", command=self._import_config_dialog).pack(side="left")
 
+        # Barre de statut, packee AVANT le notebook (avec side="bottom") pour
+        # reserver sa place en bas de la fenetre : le notebook ci-dessous
+        # utilise fill="both", expand=True et, si on le packe en premier, il
+        # engloutit tout l'espace restant du "cavity" de pack() des que le
+        # contenu total depasse la hauteur de la fenetre - ne laissant plus
+        # aucune place a un widget packe apres lui, meme avec fill="x" sans
+        # expand. Empaqueter la barre de statut en premier lui garantit sa
+        # hauteur naturelle quelle que soit la taille de la fenetre (bug
+        # trouve a l'audit : la barre de statut restait invisible/ecrasee a
+        # 1px meme en agrandissant la fenetre, tant que l'ordre n'etait pas
+        # corrige).
+        bottom_bar = ttk.Frame(self)
+        bottom_bar.pack(fill="x", side="bottom")
+        ttk.Label(bottom_bar, text=f"v{APP_VERSION}", foreground="#666").pack(side="left", padx=(8, 0), pady=4)
+        self.update_status_var = tk.StringVar(value="")
+        self.update_status_label = ttk.Label(bottom_bar, textvariable=self.update_status_var, foreground="#666")
+        self.update_status_label.pack(side="left", padx=(6, 0), pady=4)
+        self.status_var = tk.StringVar(value="Pret.")
+        ttk.Label(bottom_bar, textvariable=self.status_var, relief="sunken", anchor="w").pack(
+            fill="x", side="left", expand=True
+        )
+        donate_label = ttk.Label(bottom_bar, text="☕ Soutenir le projet", foreground="#0645AD", cursor="hand2")
+        donate_label.pack(side="right", padx=8)
+        donate_label.bind("<Button-1>", lambda event: webbrowser.open(DONATE_URL))
+
         # Notebook: apercu + historique
         notebook = ttk.Notebook(self)
         notebook.pack(fill="both", expand=True, padx=10, pady=10)
@@ -274,20 +309,6 @@ class OrganizerGUI(tk.Tk):
         self.history_tree.configure(yscrollcommand=hscroll.set)
         hscroll.pack(fill="y", side="right")
         self.history_tree.bind("<Double-1>", lambda event: self._show_batch_detail())
-
-        bottom_bar = ttk.Frame(self)
-        bottom_bar.pack(fill="x", side="bottom")
-        ttk.Label(bottom_bar, text=f"v{APP_VERSION}", foreground="#666").pack(side="left", padx=(8, 0), pady=4)
-        self.update_status_var = tk.StringVar(value="")
-        self.update_status_label = ttk.Label(bottom_bar, textvariable=self.update_status_var, foreground="#666")
-        self.update_status_label.pack(side="left", padx=(6, 0), pady=4)
-        self.status_var = tk.StringVar(value="Pret.")
-        ttk.Label(bottom_bar, textvariable=self.status_var, relief="sunken", anchor="w").pack(
-            fill="x", side="left", expand=True
-        )
-        donate_label = ttk.Label(bottom_bar, text="☕ Soutenir le projet", foreground="#0645AD", cursor="hand2")
-        donate_label.pack(side="right", padx=8)
-        donate_label.bind("<Button-1>", lambda event: webbrowser.open(DONATE_URL))
 
         self._update_check_queue = queue.Queue()
         update_checker.start_update_check(APP_VERSION, UPDATE_REPO, self._update_check_queue)

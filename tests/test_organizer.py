@@ -464,6 +464,31 @@ class OrganizerTestCase(unittest.TestCase):
         self.assertEqual(len(result.moves), 1)
         self.assertEqual(result.moves[0].category, "A verifier")
 
+    def test_exe_renamed_as_docx_is_flagged_for_review(self):
+        # Un executable Windows (en-tete MZ) renomme en .docx ne doit pas
+        # echapper a la detection sous pretexte que .docx fait partie des
+        # extensions "conteneur ZIP legitime" : ce garde-fou ne doit couvrir
+        # que le cas ou la signature detectee est bien "Archives" (un vrai
+        # document bureautique), pas n'importe quelle signature.
+        self._write_bytes("cv_candidat.docx", b"MZ" + b"\x00" * 62)
+        o = self._organizer()
+        result = o.plan()
+        self.assertEqual(len(result.moves), 1)
+        self.assertEqual(result.moves[0].category, "A verifier")
+        self.assertIn("incoherente", result.moves[0].reason)
+        self.assertIn("Installateurs", result.moves[0].reason)
+
+    def test_exe_renamed_as_apk_still_uses_apk_category(self):
+        # Cas de non-regression : un .apk garde son comportement existant
+        # (ext_category deja connu = "Installateurs"), le nouveau garde-fou
+        # cible sur les extensions sans categorie connue (docx/xlsx/...) ne
+        # doit rien changer ici.
+        self._write_bytes("appli.apk", b"MZ" + b"\x00" * 62)
+        o = self._organizer()
+        result = o.plan()
+        self.assertEqual(len(result.moves), 1)
+        self.assertEqual(result.moves[0].category, "Installateurs")
+
     def test_msix_zip_signature_is_not_falsely_flagged(self):
         # Comme .apk, .msix est un conteneur ZIP legitime pour un installateur.
         self._write_bytes("appli.msix", b"PK\x03\x04" + b"\x00" * 60)

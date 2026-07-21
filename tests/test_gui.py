@@ -185,6 +185,59 @@ class GuiTestCase(unittest.TestCase):
 
         mocked_showinfo.assert_not_called()
 
+    # -- fenetre par defaut : contenu essentiel visible sans redimensionner -
+
+    def test_default_window_shows_action_buttons_tab_and_status_bar(self):
+        # Regression trouvee a l'audit "Phase 1" : au premier lancement, la
+        # fenetre s'ouvrait en 880x600 (minsize 760x520) alors que le contenu
+        # reclame ~1123x1100px reels (winfo_reqwidth()/winfo_reqheight()) -
+        # aucun bouton d'action, aucun onglet Apercu/Historique, ni la barre
+        # de statut n'etaient visibles, seuls les champs de configuration du
+        # haut l'etaient. Ce test pilote la VRAIE fenetre Tkinter, avec sa
+        # taille par defaut reelle (aucune geometry() forcee ici), et mesure
+        # les positions/tailles reelles des widgets essentiels pour verifier
+        # qu'ils rentrent bien dans la fenetre telle qu'ouverte.
+        self.app.update()
+        win_w = self.app.winfo_width()
+        win_h = self.app.winfo_height()
+
+        # Un bouton d'action cle (Ranger les fichiers) doit etre visible.
+        run_btn = self.app.run_btn
+        self.assertTrue(run_btn.winfo_ismapped())
+        run_btn_bottom = (run_btn.winfo_rooty() - self.app.winfo_rooty()) + run_btn.winfo_height()
+        self.assertGreater(run_btn.winfo_height(), 5, "le bouton 'Ranger les fichiers' est ecrase (hauteur quasi nulle)")
+        self.assertLessEqual(run_btn_bottom, win_h, "le bouton 'Ranger les fichiers' deborde de la fenetre par defaut")
+
+        # Le notebook (onglets Apercu/Historique) doit avoir une hauteur
+        # utile reelle, pas juste sa barre d'onglets ecrasee a quelques px.
+        from tkinter import ttk
+        notebooks = [c for c in self.app.winfo_children() if isinstance(c, ttk.Notebook)]
+        self.assertEqual(len(notebooks), 1)
+        notebook = notebooks[0]
+        self.assertTrue(notebook.winfo_ismapped())
+        notebook_top = notebook.winfo_rooty() - self.app.winfo_rooty()
+        notebook_bottom = notebook_top + notebook.winfo_height()
+        self.assertLessEqual(notebook_top, win_h, "l'onglet Apercu/Historique n'est pas visible")
+        self.assertGreater(notebook.winfo_height(), 60, "l'onglet visible est ecrase a une hauteur inutilisable")
+        self.assertLessEqual(notebook_bottom, win_h)
+
+        # La barre de statut (bas de fenetre) doit etre visible avec une
+        # hauteur reelle, pas ecrasee a 1px par le notebook packe avant elle
+        # (autre regression trouvee a l'audit : ordre de pack() incorrect).
+        status_label = None
+        for frame in self.app.winfo_children():
+            if not isinstance(frame, ttk.Frame) or isinstance(frame, ttk.LabelFrame):
+                continue
+            for child in frame.winfo_children():
+                if isinstance(child, ttk.Label) and child.cget("textvariable") == str(self.app.status_var):
+                    status_label = child
+                    break
+        self.assertIsNotNone(status_label, "impossible de retrouver le label de la barre de statut")
+        self.assertTrue(status_label.winfo_ismapped())
+        self.assertGreater(status_label.winfo_height(), 5, "la barre de statut est ecrasee (hauteur quasi nulle)")
+        status_bottom = (status_label.winfo_rooty() - self.app.winfo_rooty()) + status_label.winfo_height()
+        self.assertLessEqual(status_bottom, win_h, "la barre de statut deborde de la fenetre par defaut")
+
 
 if __name__ == "__main__":
     unittest.main()

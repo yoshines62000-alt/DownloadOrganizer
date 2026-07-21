@@ -768,6 +768,29 @@ class DownloadOrganizer:
                     f"extension '{suffix}' incoherente avec le contenu reel du fichier "
                     f"(signature detectee : {signature_category}) - verification manuelle recommandee"
                 )
+            elif (
+                ext_category is None
+                and suffix in ZIP_LIKE_NON_ARCHIVE_EXTENSIONS
+                and signature_category is not None
+                and signature_category != "Archives"
+            ):
+                # Le garde-fou ZIP_LIKE_NON_ARCHIVE_EXTENSIONS ne doit couvrir
+                # QUE le cas legitime ou un document bureautique (docx/xlsx/
+                # apk/...) est reconnu comme conteneur ZIP generique
+                # (signature "Archives") : ce n'est alors pas une incoherence
+                # a signaler. Mais si la signature detectee est tout autre
+                # chose (ex: "Installateurs" pour un en-tete MZ), le fichier
+                # est en realite un executable renomme avec cette extension
+                # et NE DOIT PAS echapper a la detection - meme si aucune
+                # categorie d'extension connue (ext_category) n'existe pour
+                # ce suffixe. Meme traitement que l'incoherence
+                # extension/signature ci-dessus : signalement pour
+                # verification manuelle plutot que classement silencieux.
+                category = OLD_FILES_TARGET
+                reason = (
+                    f"extension '{suffix}' incoherente avec le contenu reel du fichier "
+                    f"(signature detectee : {signature_category}) - verification manuelle recommandee"
+                )
             elif pattern_category is not None:
                 # Route explicitement par motif de nom : l'utilisateur a
                 # deliberement demande ce routage pour ce nom de fichier -
