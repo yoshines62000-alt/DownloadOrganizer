@@ -91,6 +91,7 @@ class OrganizerGUI(tk.Tk):
         self._busy = False
         self._watch_busy = False
         self._action_after_id = None
+        self._update_check_after_id = None
 
         self._build_widgets()
         self._refresh_history_view()
@@ -328,14 +329,15 @@ class OrganizerGUI(tk.Tk):
 
         self._update_check_queue = queue.Queue()
         update_checker.start_update_check(APP_VERSION, UPDATE_REPO, self._update_check_queue)
-        self.after(500, self._poll_update_check)
+        self._update_check_after_id = self.after(500, self._poll_update_check)
 
     def _poll_update_check(self):
         try:
             status, tag = self._update_check_queue.get_nowait()
         except queue.Empty:
-            self.after(500, self._poll_update_check)
+            self._update_check_after_id = self.after(500, self._poll_update_check)
             return
+        self._update_check_after_id = None
         if status == "update_available":
             self.update_status_var.set(f"Mise a jour disponible : {tag} - Telecharger")
             self.update_status_label.configure(foreground="#0645AD", cursor="hand2")
@@ -1048,6 +1050,17 @@ class OrganizerGUI(tk.Tk):
             except (ValueError, tk.TclError):
                 pass
             self._action_after_id = None
+        # Meme precaution pour le polling de la verification de mise a jour
+        # (queue.Queue interrogee via self.after() tant qu'elle est vide) :
+        # sans annulation, ce callback peut se declencher apres la
+        # destruction de la fenetre et provoquer une erreur Tcl "invalid
+        # command name" sur stderr.
+        if self._update_check_after_id is not None:
+            try:
+                self.after_cancel(self._update_check_after_id)
+            except (ValueError, tk.TclError):
+                pass
+            self._update_check_after_id = None
         try:
             self.destroy()
         except tk.TclError:
