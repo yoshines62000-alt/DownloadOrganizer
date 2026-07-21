@@ -1108,6 +1108,207 @@ class OrganizerTestCase(unittest.TestCase):
         self.assertEqual(result[org.OLD_FILES_TARGET], 2)
         self.assertEqual(result[org.DUPLICATES_TARGET], 1)
 
+    # -- pre-filtre par hash partiel (optimisation doublons) ----------------
+
+    def test_partial_hash_prefilter_does_not_change_duplicate_detection(self):
+        # Plusieurs fichiers de MEME TAILLE mais de contenu different (le cas
+        # qui declenchait un hash complet couteux pour chacun avant le
+        # pre-filtre par hash partiel), plus une vraie paire de doublons de
+        # meme taille egalement : le resultat doit rester exactement celui
+        # d'une comparaison par hash complet, sans aucun faux positif ni
+        # faux negatif introduit par le pre-filtre.
+        same_size_content = [
+            "capture-ecran-001", "capture-ecran-002", "capture-ecran-003",
+            "capture-ecran-004", "capture-ecran-005",
+        ]
+        for index, content in enumerate(same_size_content):
+            self._write(f"img{index}.png", content=content)
+        # Vrai doublon, meme taille que les fichiers ci-dessus n'est pas
+        # necessaire : on ajoute une paire de doublons de taille identique
+        # entre eux (mais differente du groupe precedent) pour verifier que
+        # la detection fonctionne toujours au sein d'un sous-groupe distinct.
+        self._write("facture.pdf", content="facture-identique-xyz")
+        self._write("facture (1).pdf", content="facture-identique-xyz")
+
+        o = self._organizer()
+        result = o.plan()
+        categories = sorted(m.category for m in result.moves)
+        # 5 images uniques + 1 PDF garde + 1 PDF doublon.
+        self.assertEqual(categories.count("Doublons"), 1)
+        by_name = {m.source.name: m for m in result.moves}
+        self.assertEqual(by_name["facture.pdf"].category, "Doublons")
+        self.assertEqual(by_name["facture (1).pdf"].category, "PDF")
+        for index in range(len(same_size_content)):
+            self.assertEqual(by_name[f"img{index}.png"].category, "Images")
+
+    def test_partial_hash_matches_but_middle_of_file_differs_is_not_a_duplicate(self):
+        # Meme taille, meme debut, meme fin, mais milieu different : le
+        # hash partiel (debut+fin uniquement) concorderait a tort si on lui
+        # faisait confiance seul - seul le hash SHA-256 complet doit
+        # trancher, jamais le hash partiel.
+        sample_size = org.PARTIAL_HASH_SAMPLE_SIZE
+        head = b"A" * sample_size
+        tail = b"B" * sample_size
+        content_a = head + b"MILIEU-UN--" + tail
+        content_b = head + b"MILIEU-DEUX" + tail
+        self.assertEqual(len(content_a), len(content_b))
+        (self.downloads / "a.pdf").write_bytes(content_a)
+        (self.downloads / "b.pdf").write_bytes(content_b)
+
+        o = self._organizer()
+        result = o.plan()
+        self.assertEqual(len(result.moves), 2)
+        self.assertTrue(all(m.category == "PDF" for m in result.moves))
+
+    def test_partial_hash_prefilter_reduces_full_hash_calls(self):
+        # Verifie empiriquement que le pre-filtre reduit bien le nombre de
+        # lectures completes (_file_hash) quand beaucoup de fichiers
+        # partagent une taille mais pas un contenu.
+        import unittest.mock as mock
+        for index in range(30):
+            self._write(f"doc{index}.pdf", content=f"contenu-unique-{index:03d}")
+        o = self._organizer()
+        original_file_hash = org.DownloadOrganizer._file_hash
+        calls = []
+
+        def counting_file_hash(path, cache=None):
+            calls.append(path)
+            return original_file_hash(path, cache)
+
+        with mock.patch.object(org.DownloadOrganizer, "_file_hash", staticmethod(counting_file_hash)):
+            o.plan()
+        # Aucun de ces 30 fichiers de meme taille n'est un doublon : le
+        # pre-filtre par hash partiel doit eliminer tous les candidats avant
+        # tout hash complet.
+        self.assertEqual(len(calls), 0)
+
+
+# ---------------------------------------------------------------------------
+# Historique au format JSONL (append-only) et migration depuis l'ancien
+# format history.json
+# ---------------------------------------------------------------------------
+
+class HistoryJsonlTestCase(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(self._cleanup)
+        self._orig_app_dir = org.APP_DIR
+        self._orig_history_file = org.HISTORY_FILE
+        self._orig_cache = dict(org._history_count_cache)
+        org.APP_DIR = self.tmp / "appdata"
+        org.HISTORY_FILE = org.APP_DIR / "history.json"
+        org._history_count_cache = {"path": None, "count": None}
+        for handler in list(org.logger.handlers):
+            handler.close()
+            org.logger.removeHandler(handler)
+
+    def _cleanup(self):
+        for handler in list(org.logger.handlers):
+            handler.close()
+            org.logger.removeHandler(handler)
+        org.APP_DIR = self._orig_app_dir
+        org.HISTORY_FILE = self._orig_history_file
+        org._history_count_cache = self._orig_cache
+
+    def test_append_writes_jsonl_file_not_legacy_json(self):
+        org.append_batch_to_history({"index": 1})
+        jsonl_path = org._history_jsonl_path()
+        self.assertTrue(jsonl_path.exists())
+        self.assertFalse(org.HISTORY_FILE.exists())
+        lines = jsonl_path.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(len(lines), 1)
+        self.assertEqual(json.loads(lines[0])["index"], 1)
+
+    def test_append_is_a_real_append_not_a_full_rewrite(self):
+        # Ajoute plusieurs lots et verifie que chacun se retrouve, dans
+        # l'ordre, comme une ligne independante du fichier JSONL.
+        for i in range(10):
+            org.append_batch_to_history({"index": i})
+        jsonl_path = org._history_jsonl_path()
+        lines = jsonl_path.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(len(lines), 10)
+        self.assertEqual([json.loads(l)["index"] for l in lines], list(range(10)))
+        self.assertEqual([b["index"] for b in org.load_history()], list(range(10)))
+
+    def test_migration_from_legacy_json_array_preserves_all_batches(self):
+        org.APP_DIR.mkdir(parents=True, exist_ok=True)
+        legacy_data = [{"index": i, "moves": []} for i in range(5)]
+        org.HISTORY_FILE.write_text(json.dumps(legacy_data), encoding="utf-8")
+
+        history = org.load_history()
+        self.assertEqual([b["index"] for b in history], [0, 1, 2, 3, 4])
+        # Le fichier legacy est converti puis retire, le nouveau fichier
+        # JSONL devient la seule source de verite.
+        self.assertFalse(org.HISTORY_FILE.exists())
+        self.assertTrue(org._history_jsonl_path().exists())
+
+    def test_migration_then_append_keeps_old_and_new_batches(self):
+        org.APP_DIR.mkdir(parents=True, exist_ok=True)
+        legacy_data = [{"index": 0}, {"index": 1}]
+        org.HISTORY_FILE.write_text(json.dumps(legacy_data), encoding="utf-8")
+
+        org.append_batch_to_history({"index": 2})
+        history = org.load_history()
+        self.assertEqual([b["index"] for b in history], [0, 1, 2])
+
+    def test_corrupted_legacy_json_is_quarantined_not_lost_silently(self):
+        org.APP_DIR.mkdir(parents=True, exist_ok=True)
+        org.HISTORY_FILE.write_text("pas du JSON du tout", encoding="utf-8")
+        self.assertEqual(org.load_history(), [])
+        # Le fichier corrompu original est conserve sous un autre nom
+        # (quarantaine), jamais supprime silencieusement.
+        backups = list(org.APP_DIR.glob("*.corrompu-*.bak"))
+        self.assertEqual(len(backups), 1)
+
+    def test_corrupted_single_jsonl_line_only_loses_that_batch(self):
+        jsonl_path = org._history_jsonl_path()
+        org.append_batch_to_history({"index": 0})
+        org.append_batch_to_history({"index": 1})
+        with open(jsonl_path, "a", encoding="utf-8") as f:
+            f.write("{ceci n'est pas du JSON valide}\n")
+        org.append_batch_to_history({"index": 2})
+
+        history = org.load_history()
+        self.assertEqual([b["index"] for b in history], [0, 1, 2])
+
+    def test_save_history_full_rewrite_stays_compatible_with_load_and_purge(self):
+        for i in range(4):
+            org.append_batch_to_history({"index": i})
+        history = org.load_history()
+        del history[1]
+        org.save_history(history)
+        self.assertEqual([b["index"] for b in org.load_history()], [0, 2, 3])
+
+        removed = org.purge_history(keep_last=1)
+        self.assertEqual(removed, 2)
+        self.assertEqual([b["index"] for b in org.load_history()], [3])
+
+    def test_append_batch_to_history_auto_truncates_at_max_batches_jsonl(self):
+        original_max = org.MAX_HISTORY_BATCHES
+        org.MAX_HISTORY_BATCHES = 3
+        try:
+            for i in range(5):
+                org.append_batch_to_history({"index": i})
+            history = org.load_history()
+            self.assertEqual(len(history), 3)
+            self.assertEqual([b["index"] for b in history], [2, 3, 4])
+        finally:
+            org.MAX_HISTORY_BATCHES = original_max
+
+    def test_count_cache_stays_correct_across_migration_purge_and_append(self):
+        # Sequence realiste : migration, ajouts, purge, puis nouveaux ajouts
+        # - le cache de comptage utilise par append_batch_to_history ne doit
+        # jamais deriver de la realite du fichier sur disque.
+        org.APP_DIR.mkdir(parents=True, exist_ok=True)
+        org.HISTORY_FILE.write_text(json.dumps([{"index": 0}]), encoding="utf-8")
+        org.append_batch_to_history({"index": 1})  # declenche la migration
+        org.purge_history(keep_last=1)
+        org.append_batch_to_history({"index": 2})
+        org.append_batch_to_history({"index": 3})
+        history = org.load_history()
+        self.assertEqual([b["index"] for b in history], [1, 2, 3])
+
 
 if __name__ == "__main__":
     unittest.main()

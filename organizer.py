@@ -95,6 +95,19 @@ OLD_FILES_TARGET = "A verifier"
 DUPLICATES_TARGET = "Doublons"
 HASH_CHUNK_SIZE = 1024 * 1024
 
+# Taille (en octets) de l'echantillon lu en debut ET en fin de fichier pour
+# le hash "rapide" utilise comme PRE-FILTRE avant de decider quels fichiers
+# meritent un hash SHA-256 complet (voir _partial_hash / _find_duplicates_
+# within_batch). Ce hash partiel ne sert JAMAIS a lui seul a conclure a un
+# doublon : deux fichiers de meme taille dont le debut+fin different ne
+# peuvent pas etre identiques (donc jamais compares par hash complet, ce
+# qui evite l'essentiel des lectures completes des que beaucoup de fichiers
+# partagent une taille proche - captures d'ecran, factures PDF...), mais
+# deux fichiers dont le debut+fin CONCORDENT restent toujours verifies par
+# un hash SHA-256 complet avant toute conclusion, exactement comme avant
+# cette optimisation.
+PARTIAL_HASH_SAMPLE_SIZE = 64 * 1024
+
 # Motifs toujours exclus, independamment de la configuration utilisateur.
 # Non modifiables depuis la GUI : evite qu'un champ "Motifs" vide par megarde
 # ne desactive la protection de fichiers systeme/temporaires.
@@ -197,6 +210,23 @@ def _atomic_write_json(path: Path, data) -> None:
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
+        os.replace(tmp_name, path)
+    except Exception:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    """Equivalent de _atomic_write_json pour du texte brut deja serialise
+    (utilise par l'historique au format JSONL, une ligne = un lot)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), prefix=path.stem + ".", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
         os.replace(tmp_name, path)
     except Exception:
         try:
@@ -363,39 +393,150 @@ def import_config(input_path: Path) -> dict:
 # ---------------------------------------------------------------------------
 # Historique
 # ---------------------------------------------------------------------------
+#
+# Stockage au format JSONL (un objet JSON par ligne, un lot par ligne) dans
+# HISTORY_FILE avec le suffixe ".jsonl" a la place de ".json" - jamais un
+# chemin fige a l'import : il est recalcule depuis HISTORY_FILE a chaque
+# appel (voir _history_jsonl_path), pour que les tests qui redirigent
+# HISTORY_FILE vers un dossier temporaire continuent de fonctionner sans
+# modification.
+#
+# Avant cette optimisation, chaque lot reel reecrivait l'INTEGRALITE du
+# fichier history.json (relecture + reserialisation complete a chaque appel
+# de append_batch_to_history) : le cout d'un ajout croissait avec la taille
+# deja accumulee de l'historique (croissance quadratique du temps cumule sur
+# de nombreux lots). Le format JSONL permet un vrai append (une ecriture en
+# fin de fichier, sans jamais relire ni reserialiser les lots deja presents)
+# - le seul cas ou l'integralite du fichier est encore reecrite est la purge
+# volontaire (purge_history), l'annulation (qui modifie un statut existant)
+# et le compactage occasionnel declenche par MAX_HISTORY_BATCHES.
+#
+# Migration transparente : un ancien history.json (tableau JSON classique)
+# encore present est automatiquement converti en history.jsonl des la
+# premiere lecture ou le premier ajout, sans aucune perte de donnees ; le
+# fichier d'origine n'est supprime qu'une fois la conversion confirmee
+# ecrite sur disque.
+
+# Cache en memoire du nombre de lots deja presents dans le fichier JSONL
+# courant, pour eviter de relire tout le fichier a chaque appel de
+# append_batch_to_history juste pour connaitre sa longueur. Invalide
+# automatiquement des que le chemin change (ex : tests qui redirigent
+# HISTORY_FILE) puisqu'il est compare au chemin courant a chaque acces.
+_history_count_cache = {"path": None, "count": None}
+
+
+def _history_jsonl_path() -> Path:
+    return HISTORY_FILE.with_suffix(".jsonl")
+
+
+def _write_history_jsonl(history: list) -> None:
+    """Reecrit l'integralite du fichier JSONL a partir d'une liste (purge,
+    annulation, compactage, migration) et met a jour le cache de comptage
+    en consequence."""
+    jsonl_path = _history_jsonl_path()
+    lines = [json.dumps(entry, ensure_ascii=False) for entry in history]
+    content = "\n".join(lines)
+    if content:
+        content += "\n"
+    _atomic_write_text(jsonl_path, content)
+    global _history_count_cache
+    _history_count_cache = {"path": jsonl_path, "count": len(history)}
+
+
+def _migrate_legacy_history() -> list:
+    """Convertit l'ancien history.json (tableau JSON) en history.jsonl s'il
+    existe encore et qu'aucun history.jsonl n'a deja ete cree. Renvoie la
+    liste des lots (vide si aucun historique legacy ou s'il est corrompu -
+    meme comportement de quarantaine que load_history() employait avant
+    l'introduction du format JSONL)."""
+    if not HISTORY_FILE.exists():
+        return []
+    try:
+        data = json.loads(HISTORY_FILE.read_text(encoding="utf-8"))
+        if not isinstance(data, list):
+            raise ValueError("history.json ne contient pas une liste JSON valide")
+    except (json.JSONDecodeError, OSError, ValueError):
+        _ensure_logging_configured()
+        logger.warning("history.json invalide ou corrompu, historique reinitialise.", exc_info=True)
+        _quarantine_corrupted_file(HISTORY_FILE)
+        return []
+
+    _write_history_jsonl(data)
+    try:
+        HISTORY_FILE.unlink()
+    except OSError:
+        # La migration a deja ete ecrite avec succes (source de verite
+        # desormais le fichier .jsonl) : l'ancien fichier restant sur le
+        # disque n'est pas grave, juste redondant.
+        pass
+    return data
+
 
 def load_history() -> list:
-    if HISTORY_FILE.exists():
+    jsonl_path = _history_jsonl_path()
+    if not jsonl_path.exists():
+        return _migrate_legacy_history()
+
+    try:
+        text = jsonl_path.read_text(encoding="utf-8")
+    except OSError:
+        _ensure_logging_configured()
+        logger.warning("Impossible de lire history.jsonl.", exc_info=True)
+        return []
+
+    history = []
+    for lineno, line in enumerate(text.splitlines(), start=1):
+        line = line.strip()
+        if not line:
+            continue
         try:
-            data = json.loads(HISTORY_FILE.read_text(encoding="utf-8"))
-            if not isinstance(data, list):
-                raise ValueError("history.json ne contient pas une liste JSON valide")
-            return data
-        except (json.JSONDecodeError, OSError, ValueError):
+            history.append(json.loads(line))
+        except json.JSONDecodeError:
+            # Une ligne isolee corrompue (ex : coupure de courant en plein
+            # ajout) ne fait perdre que ce seul lot, jamais tout l'historique
+            # - contrairement a l'ancien format ou toute corruption partielle
+            # invalidait le fichier entier.
             _ensure_logging_configured()
-            logger.warning("history.json invalide ou corrompu, historique reinitialise.", exc_info=True)
-            _quarantine_corrupted_file(HISTORY_FILE)
-            return []
-    return []
+            logger.warning("Ligne %d de history.jsonl corrompue, ignoree.", lineno)
+    return history
 
 
 def save_history(history: list) -> None:
-    _atomic_write_json(HISTORY_FILE, history)
+    _write_history_jsonl(history)
 
 
 # Plafond de securite : au-dela, on tronque automatiquement aux plus recents
 # a chaque ajout, pour qu'un usage quotidien sur plusieurs annees ne fasse
-# jamais grossir history.json indefiniment (chaque lot est reecrit en
-# entier a chaque ajout - voir append_batch_to_history).
+# jamais grossir l'historique indefiniment. Le compactage (reecriture
+# complete au format JSONL) ne se declenche desormais que lorsque ce plafond
+# est effectivement depasse, pas a chaque ajout.
 MAX_HISTORY_BATCHES = 2000
 
 
 def append_batch_to_history(batch: dict) -> None:
-    history = load_history()
-    history.append(batch)
-    if len(history) > MAX_HISTORY_BATCHES:
-        history = history[-MAX_HISTORY_BATCHES:]
-    save_history(history)
+    jsonl_path = _history_jsonl_path()
+    if not jsonl_path.exists():
+        # Declenche la migration une seule fois (no-op si aucun history.json
+        # legacy n'existe) avant le tout premier ajout au format JSONL.
+        _migrate_legacy_history()
+
+    global _history_count_cache
+    if _history_count_cache["path"] == jsonl_path and _history_count_cache["count"] is not None:
+        count = _history_count_cache["count"]
+    else:
+        count = len(load_history())
+
+    jsonl_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(jsonl_path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(batch, ensure_ascii=False) + "\n")
+    count += 1
+    _history_count_cache = {"path": jsonl_path, "count": count}
+
+    if count > MAX_HISTORY_BATCHES:
+        # Compactage occasionnel (rare : seulement au franchissement du
+        # plafond) plutot qu'a chaque ajout comme avant.
+        history = load_history()[-MAX_HISTORY_BATCHES:]
+        _write_history_jsonl(history)
 
 
 def purge_history(keep_last: Optional[int] = None) -> int:
@@ -584,6 +725,32 @@ class DownloadOrganizer:
             cache[path] = result
         return result
 
+    @staticmethod
+    def _partial_hash(path: Path, size: int, cache: Optional[dict] = None) -> Optional[str]:
+        """Hash rapide (debut + fin du fichier) utilise UNIQUEMENT comme
+        pre-filtre avant hash complet (voir PARTIAL_HASH_SAMPLE_SIZE) : deux
+        fichiers de meme taille dont ce hash differe sont garantis differents
+        (pas de faux negatif possible - il suffit d'un octet different en
+        debut ou fin pour que ce hash differe), mais deux fichiers dont ce
+        hash concorde ne sont PAS garantis identiques (le milieu du fichier
+        n'est pas lu) : ce cas doit toujours etre confirme par un hash SHA-256
+        complet, jamais traite comme une preuve suffisante a lui seul."""
+        if cache is not None and path in cache:
+            return cache[path]
+        digest = hashlib.sha256()
+        try:
+            with open(path, "rb") as f:
+                digest.update(f.read(PARTIAL_HASH_SAMPLE_SIZE))
+                if size > PARTIAL_HASH_SAMPLE_SIZE * 2:
+                    f.seek(-PARTIAL_HASH_SAMPLE_SIZE, os.SEEK_END)
+                    digest.update(f.read(PARTIAL_HASH_SAMPLE_SIZE))
+            result = digest.hexdigest()
+        except OSError:
+            result = None
+        if cache is not None:
+            cache[path] = result
+        return result
+
     def _unique_destination(self, target_dir: Path, filename: str, reserved: set) -> Path:
         """Trouve une destination libre, en tenant aussi compte des destinations
         deja attribuees a d'autres fichiers du meme lot (pas encore deplaces sur
@@ -713,6 +880,7 @@ class DownloadOrganizer:
 
         reserved_destinations = set()
         hash_cache: dict = {}
+        partial_hash_cache: dict = {}
         signature_cache: dict = {}
         candidates = []  # list[(Path entry, str category, str reason)]
 
@@ -813,7 +981,7 @@ class DownloadOrganizer:
 
             candidates.append((entry, category, reason))
 
-        duplicate_of = self._find_duplicates_within_batch(candidates, hash_cache)
+        duplicate_of = self._find_duplicates_within_batch(candidates, hash_cache, partial_hash_cache)
 
         for entry, category, reason in candidates:
             if entry in duplicate_of:
@@ -846,11 +1014,28 @@ class DownloadOrganizer:
         return result
 
     @staticmethod
-    def _find_duplicates_within_batch(candidates: list, hash_cache: dict) -> dict:
+    def _find_duplicates_within_batch(candidates: list, hash_cache: dict, partial_hash_cache: Optional[dict] = None) -> dict:
         """Detecte les doublons de contenu parmi les fichiers du lot courant.
         Ne hash que les fichiers dont un autre fichier partage exactement la
         meme taille (evite de hasher inutilement tout le dossier). Renvoie
-        {Path doublon -> Path fichier conserve (le "garde")}."""
+        {Path doublon -> Path fichier conserve (le "garde")}.
+
+        A l'interieur de chaque groupe de meme taille, un second pre-filtre
+        rapide (_partial_hash, debut+fin du fichier) reduit encore l'ensemble
+        des fichiers necessitant un hash SHA-256 complet : sur un dossier
+        contenant beaucoup de fichiers de tailles proches mais de contenu
+        different (captures d'ecran, factures PDF...), le hash complet
+        (_file_hash, qui lit tout le fichier) n'est alors calcule que pour
+        les fichiers dont le debut+fin coincide deja - jamais pour decider
+        seul d'un doublon, uniquement pour restreindre les candidats. Deux
+        fichiers de contenu strictement identique ont necessairement le meme
+        hash partiel (leur debut et leur fin sont identiques par definition),
+        ils ne peuvent donc jamais se retrouver separes dans deux sous-
+        groupes differents : ce pre-filtre ne change donc jamais le resultat
+        final de detection, seulement le nombre de lectures completes de
+        fichiers necessaires pour l'obtenir."""
+        if partial_hash_cache is None:
+            partial_hash_cache = {}
         by_size: dict = defaultdict(list)
         for entry, _category, _reason in candidates:
             try:
@@ -863,15 +1048,26 @@ class DownloadOrganizer:
         for size, group in by_size.items():
             if len(group) < 2:
                 continue
-            seen_hashes: dict = {}
-            for entry in sorted(group, key=lambda p: p.name.lower()):
-                digest = DownloadOrganizer._file_hash(entry, hash_cache)
-                if digest is None:
+
+            by_partial: dict = defaultdict(list)
+            for entry in group:
+                partial = DownloadOrganizer._partial_hash(entry, size, partial_hash_cache)
+                by_partial[partial].append(entry)
+
+            for partial_group in by_partial.values():
+                if len(partial_group) < 2:
+                    # Aucun autre fichier de meme taille ne partage ce debut+fin :
+                    # impossible que ce soit un doublon, aucun hash complet requis.
                     continue
-                if digest in seen_hashes:
-                    duplicate_of[entry] = seen_hashes[digest]
-                else:
-                    seen_hashes[digest] = entry
+                seen_hashes: dict = {}
+                for entry in sorted(partial_group, key=lambda p: p.name.lower()):
+                    digest = DownloadOrganizer._file_hash(entry, hash_cache)
+                    if digest is None:
+                        continue
+                    if digest in seen_hashes:
+                        duplicate_of[entry] = seen_hashes[digest]
+                    else:
+                        seen_hashes[digest] = entry
         return duplicate_of
 
     # -- execution --------------------------------------------------------
