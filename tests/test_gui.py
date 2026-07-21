@@ -185,6 +185,161 @@ class GuiTestCase(unittest.TestCase):
 
         mocked_showinfo.assert_not_called()
 
+    # -- Phase 2 : plan()/execute() ne bloquent plus le thread principal Tk -
+    # -- (Simuler, Ranger les fichiers, Mode Veille), meme pattern (thread +
+    # -- queue.Queue + after()) que le scan des dossiers "A verifier" ------
+
+    def _make_slow_plan(self, delay: float = 0.5):
+        """Remplace DownloadOrganizer.plan par une version qui dort `delay`
+        secondes avant de deleguer au vrai plan() - simule le gel de ~20s
+        mesure a l'audit sur un gros volume de fichiers, sans avoir a
+        generer reellement des milliers de fichiers dans chaque test."""
+        original_plan = org.DownloadOrganizer.plan
+
+        def slow_plan(self_org, *args, **kwargs):
+            time.sleep(delay)
+            return original_plan(self_org, *args, **kwargs)
+
+        return slow_plan
+
+    def _pump_until(self, predicate, timeout: float = 5.0):
+        deadline = time.time() + timeout
+        while not predicate() and time.time() < deadline:
+            self.app.update()
+            time.sleep(0.02)
+        return predicate()
+
+    def test_simulate_does_not_block_the_ui_thread_and_disables_buttons_while_running(self):
+        (self.downloads / "photo.jpg").write_bytes(b"x" * 100)
+
+        with mock.patch.object(org.DownloadOrganizer, "plan", self._make_slow_plan(0.5)), \
+                mock.patch.object(gui, "messagebox") as mocked_messagebox:
+            start = time.perf_counter()
+            self.app._simulate()
+            elapsed = time.perf_counter() - start
+            # Avant le correctif, _simulate() executait plan() de maniere
+            # synchrone sur le thread principal : cette assertion aurait
+            # echoue (elapsed >= 0.5).
+            self.assertLess(elapsed, 0.2)
+
+            # Les boutons declencheurs sont desactives pendant le traitement,
+            # pour eviter un double-declenchement (F5/clic pendant que le
+            # premier plan() tourne encore sur son thread).
+            self.assertEqual(str(self.app.simulate_btn.cget("state")), "disabled")
+            self.assertEqual(str(self.app.run_btn.cget("state")), "disabled")
+            self.assertTrue(self.app._busy)
+
+            finished = self._pump_until(lambda: not self.app._busy)
+            self.assertTrue(finished, "la simulation ne s'est jamais terminee")
+            mocked_messagebox.showerror.assert_not_called()
+
+        self.assertEqual(str(self.app.simulate_btn.cget("state")), "normal")
+        self.assertEqual(str(self.app.run_btn.cget("state")), "normal")
+        self.assertEqual(len(self.app.preview_tree.get_children()), 1)
+        self.assertIn("Simulation", self.app.status_var.get())
+        # Aucun fichier reellement deplace par une simulation.
+        self.assertTrue((self.downloads / "photo.jpg").exists())
+
+    def test_simulate_ignores_a_second_trigger_while_already_running(self):
+        (self.downloads / "photo.jpg").write_bytes(b"x" * 100)
+        call_count = {"n": 0}
+        original_plan = org.DownloadOrganizer.plan
+
+        def counting_slow_plan(self_org, *args, **kwargs):
+            call_count["n"] += 1
+            time.sleep(0.4)
+            return original_plan(self_org, *args, **kwargs)
+
+        with mock.patch.object(org.DownloadOrganizer, "plan", counting_slow_plan), \
+                mock.patch.object(gui, "messagebox"):
+            self.app._simulate()
+            # Simule un second declenchement (double-clic, ou raccourci F5)
+            # pendant que le premier plan() tourne encore : ne doit jamais
+            # lancer un second traitement en parallele.
+            self.app._simulate()
+            self.assertTrue(self._pump_until(lambda: not self.app._busy))
+
+        self.assertEqual(call_count["n"], 1)
+
+    def test_run_real_does_not_block_the_ui_thread_and_moves_files_via_background_thread(self):
+        (self.downloads / "photo.jpg").write_bytes(b"x" * 100)
+
+        with mock.patch.object(org.DownloadOrganizer, "plan", self._make_slow_plan(0.5)), \
+                mock.patch.object(gui, "messagebox") as mocked_messagebox:
+            mocked_messagebox.askyesno.return_value = True
+            start = time.perf_counter()
+            self.app._run_real()
+            elapsed = time.perf_counter() - start
+            # Avant le correctif, _run_real() executait plan() (et execute())
+            # de maniere synchrone sur le thread principal.
+            self.assertLess(elapsed, 0.2)
+            self.assertEqual(str(self.app.run_btn.cget("state")), "disabled")
+            self.assertEqual(str(self.app.simulate_btn.cget("state")), "disabled")
+
+            finished = self._pump_until(lambda: not self.app._busy)
+            self.assertTrue(finished, "le rangement reel ne s'est jamais termine")
+            mocked_messagebox.showerror.assert_not_called()
+
+        self.assertEqual(str(self.app.run_btn.cget("state")), "normal")
+        self.assertEqual(str(self.app.simulate_btn.cget("state")), "normal")
+        self.assertFalse((self.downloads / "photo.jpg").exists())
+        self.assertIsNotNone(self.app.last_real_batch)
+        self.assertIn("1 fichier(s) deplace", self.app.status_var.get())
+        # self.organizer n'est reaffecte qu'apres la fin complete du
+        # traitement, depuis le thread principal.
+        self.assertEqual(self.app.organizer.config["downloads_dir"], str(self.downloads))
+
+    def test_watch_tick_does_not_block_the_ui_thread_nor_disable_manual_buttons(self):
+        with mock.patch.object(org.DownloadOrganizer, "plan", self._make_slow_plan(0.5)), \
+                mock.patch.object(gui, "messagebox"):
+            self.app.watch_active = True
+            self.app._watch_last_signature = None
+            start = time.perf_counter()
+            self.app._watch_tick()
+            elapsed = time.perf_counter() - start
+            # Avant le correctif, _watch_tick() executait plan() de maniere
+            # synchrone sur le thread principal, y compris en Mode Veille -
+            # cense pourtant etre une tache de fond non intrusive.
+            self.assertLess(elapsed, 0.2)
+
+            # Contrairement a Simuler/Ranger, un cycle de veille ne doit
+            # jamais desactiver les boutons manuels : la veille reste une
+            # tache de fond non intrusive.
+            self.assertEqual(str(self.app.simulate_btn.cget("state")), "normal")
+            self.assertEqual(str(self.app.run_btn.cget("state")), "normal")
+            self.assertFalse(self.app._busy)
+            self.assertTrue(self.app._watch_busy)
+
+            finished = self._pump_until(lambda: not self.app._watch_busy)
+            self.assertTrue(finished, "le cycle de veille ne s'est jamais termine")
+
+        self.app.watch_active = False
+
+    def test_watch_tick_skips_a_cycle_while_a_manual_action_is_running(self):
+        call_count = {"n": 0}
+        original_plan = org.DownloadOrganizer.plan
+
+        def counting_plan(self_org, *args, **kwargs):
+            call_count["n"] += 1
+            return original_plan(self_org, *args, **kwargs)
+
+        with mock.patch.object(org.DownloadOrganizer, "plan", counting_plan):
+            self.app._busy = True
+            try:
+                self.app.watch_active = True
+                self.app._watch_tick()
+                # Doit se reprogrammer sans jamais appeler plan() tant qu'une
+                # action manuelle est en cours.
+                self.assertFalse(self.app._watch_busy)
+                self.assertEqual(call_count["n"], 0)
+                self.assertIsNotNone(self.app._watch_after_id)
+            finally:
+                if self.app._watch_after_id is not None:
+                    self.app.after_cancel(self.app._watch_after_id)
+                    self.app._watch_after_id = None
+                self.app.watch_active = False
+                self.app._busy = False
+
     # -- fenetre par defaut : contenu essentiel visible sans redimensionner -
 
     def test_default_window_shows_action_buttons_tab_and_status_bar(self):

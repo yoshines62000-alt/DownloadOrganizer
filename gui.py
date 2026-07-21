@@ -76,6 +76,21 @@ class OrganizerGUI(tk.Tk):
         self._watch_after_id = None
         self._watch_last_signature = None
         self._stale_review_after_id = None
+        # _busy : verrou general couvrant tout appel a plan()/execute() en
+        # arriere-plan (Simuler, Ranger les fichiers OU un cycle de Mode
+        # Veille) - empeche qu'un double-clic ou un raccourci clavier
+        # (Ctrl+Entree/F5, non desactives par l'etat des boutons) ne
+        # relance un second traitement pendant qu'un premier tourne encore
+        # sur son propre thread. _watch_busy est le pendant specifique au
+        # Mode Veille : un cycle de veille en cours ne doit jamais faire
+        # progresser _busy/desactiver les boutons Simuler/Ranger (la veille
+        # doit rester une tache de fond non intrusive), mais un cycle de
+        # veille ne doit jamais non plus se chevaucher avec un autre cycle
+        # de veille ni avec une action manuelle en cours (les deux
+        # pourraient deplacer les memes fichiers en meme temps).
+        self._busy = False
+        self._watch_busy = False
+        self._action_after_id = None
 
         self._build_widgets()
         self._refresh_history_view()
@@ -223,7 +238,8 @@ class OrganizerGUI(tk.Tk):
         btn_frame_2.pack(fill="x")
 
         ttk.Button(btn_frame_1, text="Enregistrer la configuration (Ctrl+S)", command=self._save_config).pack(side="left")
-        ttk.Button(btn_frame_1, text="Simuler (F5)", command=self._simulate).pack(side="left", padx=6)
+        self.simulate_btn = ttk.Button(btn_frame_1, text="Simuler (F5)", command=self._simulate)
+        self.simulate_btn.pack(side="left", padx=6)
         self.run_btn = ttk.Button(btn_frame_1, text="Ranger les fichiers (Ctrl+Entree)", command=self._run_real)
         self.run_btn.pack(side="left")
         ttk.Button(btn_frame_1, text="Annuler le dernier rangement (Ctrl+Z)", command=self._undo).pack(side="left", padx=6)
@@ -333,6 +349,82 @@ class OrganizerGUI(tk.Tk):
     # ------------------------------------------------------------------
     # Actions
     # ------------------------------------------------------------------
+
+    def _run_worker(self, work, on_success, on_error=None, poll_interval_ms=100, track_after_id=None):
+        """Execute `work` (callable sans argument) sur un thread separe, puis
+        rappelle on_success(resultat) - ou on_error(exception) si `work` a
+        leve - sur le thread PRINCIPAL Tk, via self.after(). Meme pattern
+        que _check_stale_review_folders/_poll_stale_review_queue (deja en
+        place pour le scan des dossiers "A verifier"/"Doublons" au
+        demarrage) : thread + queue.Queue + polling par self.after(), pour
+        ne jamais bloquer l'interface pendant plan()/execute() (qui
+        peuvent prendre plusieurs secondes sur de gros volumes, domines
+        par la detection de doublons).
+
+        Aucun widget ni etat partage (self.organizer, self.last_real_batch,
+        la config...) n'est touche depuis le thread de fond : `work` ne
+        doit lire/ecrire que des objets qui lui sont propres (voir les
+        organizers "snapshot", construits a partir d'une copie profonde de
+        la config, utilises par _simulate/_run_real/_watch_tick) ; seul
+        on_success/on_error, execute sur le thread principal apres depot
+        du resultat dans la queue, a le droit d'appliquer quoi que ce soit
+        aux widgets ou a l'etat de l'application.
+
+        `track_after_id`, si fourni, est rappele a chaque (re)programmation
+        d'un self.after() avec l'id courant (ou None une fois le resultat
+        traite) : cela permet a l'appelant de stocker cet id dans son
+        propre attribut (ex: self._action_after_id, self._watch_after_id)
+        afin de pouvoir l'annuler proprement depuis _on_close si la fenetre
+        est fermee pendant que le traitement tourne encore."""
+        result_queue: "queue.Queue" = queue.Queue()
+
+        def worker():
+            try:
+                value = work()
+            except Exception as exc:  # noqa: BLE001 - garde-fou du thread de
+                # fond : une exception inattendue doit remonter au thread
+                # principal via la queue (pour y etre affichee proprement),
+                # jamais traverser un thread secondaire en silence.
+                result_queue.put(("error", exc))
+            else:
+                result_queue.put(("ok", value))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+        def poll():
+            try:
+                status, payload = result_queue.get_nowait()
+            except queue.Empty:
+                after_id = self.after(poll_interval_ms, poll)
+                if track_after_id is not None:
+                    track_after_id(after_id)
+                return
+            if track_after_id is not None:
+                track_after_id(None)
+            if status == "error":
+                if on_error is not None:
+                    on_error(payload)
+                else:
+                    raise payload
+            else:
+                on_success(payload)
+
+        after_id = self.after(poll_interval_ms, poll)
+        if track_after_id is not None:
+            track_after_id(after_id)
+
+    def _set_busy(self, busy: bool, message: str = None):
+        """Active/desactive l'indicateur "traitement en cours" pour les
+        actions manuelles (Simuler / Ranger les fichiers) : desactive leurs
+        boutons declencheurs (pour eviter un double-declenchement pendant
+        qu'un plan()/execute() tourne deja sur un thread de fond) et, en
+        option, met a jour la barre de statut."""
+        self._busy = busy
+        state = "disabled" if busy else "normal"
+        self.simulate_btn.configure(state=state)
+        self.run_btn.configure(state=state)
+        if message is not None:
+            self.status_var.set(message)
 
     def _browse_downloads(self):
         path = filedialog.askdirectory(title="Choisir le dossier Telechargements", initialdir=self.downloads_var.get())
@@ -495,6 +587,12 @@ class OrganizerGUI(tk.Tk):
             self.preview_tree.insert("", "end", values=(move.source.name, move.category, str(move.destination), move.reason))
 
     def _simulate(self):
+        # Garde-fou contre un double-declenchement : le bouton est desactive
+        # pendant le traitement, mais le raccourci F5 (bind_all, independant
+        # de l'etat du bouton) pourrait sinon relancer un second plan() en
+        # parallele du premier.
+        if self._busy:
+            return
         config = self._collect_config()
         if config is None:
             return
@@ -502,81 +600,143 @@ class OrganizerGUI(tk.Tk):
         # sans les enregistrer definitivement. Utilisez "Enregistrer la
         # configuration" ou "Ranger les fichiers" pour persister.
         #
-        # Important : on utilise un organizer temporaire, sans toucher a
-        # self.organizer. Si le Mode Veille tourne en arriere-plan, il
-        # continue d'utiliser la configuration active (sauvegardee) - un
-        # simple "Simuler" ne doit jamais changer silencieusement son
-        # comportement.
-        preview_organizer = DownloadOrganizer(config)
+        # Important : on utilise un organizer temporaire, construit a partir
+        # d'une COPIE PROFONDE de la config, sans toucher a self.organizer.
+        # Si le Mode Veille tourne en arriere-plan, il continue d'utiliser la
+        # configuration active (sauvegardee) - un simple "Simuler" ne doit
+        # jamais changer silencieusement son comportement. La copie profonde
+        # est indispensable maintenant que plan()/execute() s'executent sur
+        # un thread separe : sans elle, ce thread lirait le meme dict que
+        # self.config_data, que le thread principal pourrait muter entre
+        # temps (Ctrl+S, Activer la veille...) pendant que le calcul tourne
+        # encore - une mutation d'etat partage non synchronisee.
+        preview_organizer = DownloadOrganizer(copy.deepcopy(config))
 
-        result = preview_organizer.plan()
-        if result.errors:
-            messagebox.showerror("Erreur", "\n".join(f"{p}: {e}" for p, e in result.errors))
-            return
+        self._set_busy(True, "Simulation en cours...")
 
-        self._fill_preview(result)
-        preview_organizer.execute(result, simulate=True)
-        duplicates = [m for m in result.moves if m.category == DUPLICATES_TARGET]
-        extra = f", {len(result.skipped_dirs)} sous-dossier(s) non parcouru(s)" if result.skipped_dirs else ""
-        dup_note = f", dont {len(duplicates)} doublon(s) de contenu detecte(s)" if duplicates else ""
-        self.status_var.set(
-            f"Simulation : {len(result.moves)} fichier(s) seraient deplaces{dup_note}, "
-            f"{len(result.excluded)} ignore(s){extra}. Aucun fichier n'a ete modifie."
+        def work():
+            result = preview_organizer.plan()
+            if not result.errors:
+                preview_organizer.execute(result, simulate=True)
+            return result
+
+        def on_success(result):
+            self._set_busy(False)
+            if result.errors:
+                messagebox.showerror("Erreur", "\n".join(f"{p}: {e}" for p, e in result.errors))
+                return
+            self._fill_preview(result)
+            duplicates = [m for m in result.moves if m.category == DUPLICATES_TARGET]
+            extra = f", {len(result.skipped_dirs)} sous-dossier(s) non parcouru(s)" if result.skipped_dirs else ""
+            dup_note = f", dont {len(duplicates)} doublon(s) de contenu detecte(s)" if duplicates else ""
+            self.status_var.set(
+                f"Simulation : {len(result.moves)} fichier(s) seraient deplaces{dup_note}, "
+                f"{len(result.excluded)} ignore(s){extra}. Aucun fichier n'a ete modifie."
+            )
+
+        def on_error(exc):
+            self._set_busy(False)
+            messagebox.showerror("Erreur", f"La simulation a echoue : {exc}")
+
+        self._run_worker(
+            work, on_success, on_error,
+            track_after_id=lambda after_id: setattr(self, "_action_after_id", after_id),
         )
 
     def _run_real(self):
+        # Meme garde-fou que _simulate (raccourci Ctrl+Entree independant de
+        # l'etat du bouton).
+        if self._busy:
+            return
         config = self._collect_config()
         if config is None:
             return
         save_config(config)
-        self.organizer = DownloadOrganizer(config)
+        # Snapshot isole (copie profonde de la config) pour le thread de
+        # fond, meme raison que dans _simulate : le thread ne doit jamais
+        # partager de dict mutable avec self.config_data. self.organizer
+        # n'est reaffecte que depuis le thread PRINCIPAL, une fois le
+        # traitement entierement termine (voir on_execute_success) - jamais
+        # depuis le thread de fond.
+        worker_organizer = DownloadOrganizer(copy.deepcopy(config))
 
-        result = self.organizer.plan()
-        if result.errors:
-            messagebox.showerror("Erreur", "\n".join(f"{p}: {e}" for p, e in result.errors))
-            return
+        self._set_busy(True, "Analyse en cours...")
 
-        if not result.moves:
-            messagebox.showinfo("Rien a faire", "Aucun fichier a ranger pour le moment.")
-            return
+        def plan_work():
+            return worker_organizer.plan()
 
-        self._fill_preview(result)
+        def on_plan_success(result):
+            self._set_busy(False)
+            if result.errors:
+                messagebox.showerror("Erreur", "\n".join(f"{p}: {e}" for p, e in result.errors))
+                return
 
-        duplicates = [m for m in result.moves if m.category == DUPLICATES_TARGET]
-        dup_line = (
-            f"Dont {len(duplicates)} doublon(s) de contenu identique, ranges a part dans "
-            f"'{DUPLICATES_TARGET}' (rien n'est jamais supprime).\n"
-            if duplicates else ""
-        )
-        confirm = messagebox.askyesno(
-            "Confirmer le rangement",
-            f"{len(result.moves)} fichier(s) vont etre deplaces (aucune suppression).\n"
-            f"{dup_line}"
-            "Vous pourrez annuler ce lot via le bouton 'Annuler le dernier rangement'.\n\n"
-            "Continuer ?",
-        )
-        if not confirm:
-            return
+            if not result.moves:
+                messagebox.showinfo("Rien a faire", "Aucun fichier a ranger pour le moment.")
+                return
 
-        batch = self.organizer.execute(result, simulate=False)
-        errors = [m for m in batch["moves"] if m["status"] == "erreur"]
-        moved = [m for m in batch["moves"] if m["status"] == "deplace"]
-        self.last_real_batch = batch
-        self.export_btn.configure(state="normal")
-        self.status_var.set(f"{len(moved)} fichier(s) deplace(s), {len(errors)} erreur(s).")
-        if errors:
-            messagebox.showwarning(
-                "Terminee avec des erreurs",
-                "\n".join(f"{e['source']}: {e.get('error', '')}" for e in errors),
+            self._fill_preview(result)
+
+            duplicates = [m for m in result.moves if m.category == DUPLICATES_TARGET]
+            dup_line = (
+                f"Dont {len(duplicates)} doublon(s) de contenu identique, ranges a part dans "
+                f"'{DUPLICATES_TARGET}' (rien n'est jamais supprime).\n"
+                if duplicates else ""
             )
-        if batch.get("history_error"):
-            messagebox.showwarning(
-                "Historique non enregistre",
-                "Les fichiers ont bien ete deplaces, mais l'historique n'a pas pu etre "
-                f"enregistre ({batch['history_error']}) : l'annulation ne sera pas "
-                "disponible pour ce lot.",
+            confirm = messagebox.askyesno(
+                "Confirmer le rangement",
+                f"{len(result.moves)} fichier(s) vont etre deplaces (aucune suppression).\n"
+                f"{dup_line}"
+                "Vous pourrez annuler ce lot via le bouton 'Annuler le dernier rangement'.\n\n"
+                "Continuer ?",
             )
-        self._refresh_history_view()
+            if not confirm:
+                return
+
+            self._set_busy(True, "Rangement en cours...")
+
+            def execute_work():
+                return worker_organizer.execute(result, simulate=False)
+
+            def on_execute_success(batch):
+                self._set_busy(False)
+                self.organizer = worker_organizer
+                errors = [m for m in batch["moves"] if m["status"] == "erreur"]
+                moved = [m for m in batch["moves"] if m["status"] == "deplace"]
+                self.last_real_batch = batch
+                self.export_btn.configure(state="normal")
+                self.status_var.set(f"{len(moved)} fichier(s) deplace(s), {len(errors)} erreur(s).")
+                if errors:
+                    messagebox.showwarning(
+                        "Terminee avec des erreurs",
+                        "\n".join(f"{e['source']}: {e.get('error', '')}" for e in errors),
+                    )
+                if batch.get("history_error"):
+                    messagebox.showwarning(
+                        "Historique non enregistre",
+                        "Les fichiers ont bien ete deplaces, mais l'historique n'a pas pu etre "
+                        f"enregistre ({batch['history_error']}) : l'annulation ne sera pas "
+                        "disponible pour ce lot.",
+                    )
+                self._refresh_history_view()
+
+            def on_execute_error(exc):
+                self._set_busy(False)
+                messagebox.showerror("Erreur", f"Le rangement a echoue : {exc}")
+
+            self._run_worker(
+                execute_work, on_execute_success, on_execute_error,
+                track_after_id=lambda after_id: setattr(self, "_action_after_id", after_id),
+            )
+
+        def on_plan_error(exc):
+            self._set_busy(False)
+            messagebox.showerror("Erreur", f"L'analyse a echoue : {exc}")
+
+        self._run_worker(
+            plan_work, on_plan_success, on_plan_error,
+            track_after_id=lambda after_id: setattr(self, "_action_after_id", after_id),
+        )
 
     def _open_target_dir(self):
         target = self.base_target_var.get().strip()
@@ -630,6 +790,7 @@ class OrganizerGUI(tk.Tk):
 
     def _stop_watch(self, status_message: str = "Veille desactivee."):
         self.watch_active = False
+        self._watch_busy = False
         if self._watch_after_id is not None:
             try:
                 self.after_cancel(self._watch_after_id)
@@ -640,58 +801,103 @@ class OrganizerGUI(tk.Tk):
         self.watch_status_var.set(status_message)
 
     def _watch_tick(self):
+        """Un cycle de veille : plan() (potentiellement plusieurs secondes
+        sur de gros volumes, domine par la detection de doublons) est
+        deporte sur un thread separe via _run_worker, exactement comme
+        _check_stale_review_folders - le Mode Veille est cense etre une
+        tache de fond non intrusive, elle ne doit jamais geler l'interface,
+        ni meme desactiver les boutons Simuler/Ranger (self._busy n'est
+        jamais touche ici)."""
         if not self.watch_active:
             return
 
-        try:
-            result = self.organizer.plan()
-        except Exception as exc:  # noqa: BLE001 - garde-fou de la boucle de fond :
-            # toute exception inattendue doit arreter proprement la veille et
-            # le signaler, plutot que de laisser un self.after() jamais
-            # reprogramme geler silencieusement "Veille active" pour toujours.
-            self._stop_watch(f"Veille interrompue (erreur inattendue) : {exc}")
+        if self._watch_busy or self._busy:
+            # Un cycle de veille precedent (ou une action manuelle Simuler/
+            # Ranger) est encore en cours : on ne lance jamais un second
+            # plan()/execute() en parallele (deux traitements pourraient
+            # deplacer les memes fichiers en meme temps). On se contente de
+            # reessayer un peu plus tard, sans jamais bloquer ni interrompre
+            # la veille.
+            self._watch_after_id = self.after(1000, self._watch_tick)
             return
 
-        if result.errors:
-            self._stop_watch(
-                "Veille interrompue : " + "; ".join(f"{p}: {e}" for p, e in result.errors)
-            )
-            return
+        self._watch_busy = True
+        # Snapshot isole (copie profonde de la config), meme raison que dans
+        # _simulate/_run_real : le thread de fond ne doit jamais lire
+        # self.organizer.config en direct, potentiellement mute entre-temps
+        # par une autre action sur le thread principal (Ctrl+S, "Ranger les
+        # fichiers"...).
+        worker_organizer = DownloadOrganizer(copy.deepcopy(self.organizer.config))
 
-        # "Signature" du lot en attente (fichier + taille + date de modification) :
-        # si elle est identique a celle observee au tour precedent, aucun fichier
-        # n'a change depuis -> les telechargements sont consideres termines et on
-        # propose le rangement. Sinon on attend encore (fichiers en cours d'ecriture).
-        signature = tuple(sorted(
-            (str(m.source), *(_stat_signature(m.source)))
-            for m in result.moves
-        ))
+        def work():
+            return worker_organizer.plan()
 
-        if result.moves and signature == self._watch_last_signature:
-            self._watch_last_signature = None
-            self._prompt_watch_batch(result)
-        else:
-            self._watch_last_signature = signature
-            if result.moves:
-                self.watch_status_var.set(
-                    f"Veille active : {len(result.moves)} fichier(s) detecte(s), "
-                    "stabilisation en cours (attente de fin de telechargement)..."
+        def on_success(result):
+            self._watch_busy = False
+            if not self.watch_active:
+                # La veille a ete desactivee (ou la fenetre fermee) pendant
+                # que ce cycle tournait encore en arriere-plan : on ignore ce
+                # resultat desormais perime plutot que de reactiver un etat
+                # ou re-planifier un tick.
+                return
+
+            if result.errors:
+                self._stop_watch(
+                    "Veille interrompue : " + "; ".join(f"{p}: {e}" for p, e in result.errors)
                 )
+                return
+
+            # "Signature" du lot en attente (fichier + taille + date de modification) :
+            # si elle est identique a celle observee au tour precedent, aucun fichier
+            # n'a change depuis -> les telechargements sont consideres termines et on
+            # propose le rangement. Sinon on attend encore (fichiers en cours d'ecriture).
+            signature = tuple(sorted(
+                (str(m.source), *(_stat_signature(m.source)))
+                for m in result.moves
+            ))
+
+            if result.moves and signature == self._watch_last_signature:
+                self._watch_last_signature = None
+                self._prompt_watch_batch(worker_organizer, result)
             else:
-                self.watch_status_var.set("Veille active : aucun nouveau fichier a ranger pour le moment.")
+                self._watch_last_signature = signature
+                if result.moves:
+                    self.watch_status_var.set(
+                        f"Veille active : {len(result.moves)} fichier(s) detecte(s), "
+                        "stabilisation en cours (attente de fin de telechargement)..."
+                    )
+                else:
+                    self.watch_status_var.set("Veille active : aucun nouveau fichier a ranger pour le moment.")
+                self._schedule_next_watch_tick()
 
-        if self.watch_active:
-            try:
-                interval = int(self.watch_interval_var.get().strip())
-                if interval < 5:
-                    raise ValueError
-            except ValueError:
-                # Champ modifie en cours de route avec une valeur invalide : on
-                # garde la derniere cadence connue plutot que d'interrompre la veille.
-                interval = self.organizer.config.get("watch_interval_seconds", DEFAULT_WATCH_INTERVAL_SECONDS)
-            self._watch_after_id = self.after(interval * 1000, self._watch_tick)
+        def on_error(exc):
+            self._watch_busy = False
+            if not self.watch_active:
+                return
+            # toute exception inattendue doit arreter proprement la veille et
+            # le signaler, plutot que de laisser la veille geler
+            # silencieusement pour toujours (plus aucun tick reprogramme).
+            self._stop_watch(f"Veille interrompue (erreur inattendue) : {exc}")
 
-    def _prompt_watch_batch(self, result):
+        self._run_worker(
+            work, on_success, on_error,
+            track_after_id=lambda after_id: setattr(self, "_watch_after_id", after_id),
+        )
+
+    def _schedule_next_watch_tick(self):
+        if not self.watch_active:
+            return
+        try:
+            interval = int(self.watch_interval_var.get().strip())
+            if interval < 5:
+                raise ValueError
+        except ValueError:
+            # Champ modifie en cours de route avec une valeur invalide : on
+            # garde la derniere cadence connue plutot que d'interrompre la veille.
+            interval = self.organizer.config.get("watch_interval_seconds", DEFAULT_WATCH_INTERVAL_SECONDS)
+        self._watch_after_id = self.after(interval * 1000, self._watch_tick)
+
+    def _prompt_watch_batch(self, worker_organizer, result):
         self._fill_preview(result)
         duplicates = [m for m in result.moves if m.category == DUPLICATES_TARGET]
         dup_line = f"Dont {len(duplicates)} doublon(s) de contenu identique.\n" if duplicates else ""
@@ -701,8 +907,27 @@ class OrganizerGUI(tk.Tk):
             f"{dup_line}"
             "Ranger maintenant ?",
         )
-        if confirm:
-            batch = self.organizer.execute(result, simulate=False)
+        if not confirm:
+            self.watch_status_var.set(
+                "Veille active : rangement ignore pour ce lot. Il sera reproposé au prochain "
+                "controle stable (meme si le dossier ne change pas d'ici la)."
+            )
+            self._schedule_next_watch_tick()
+            return
+
+        self._watch_busy = True
+
+        def work():
+            return worker_organizer.execute(result, simulate=False)
+
+        def on_success(batch):
+            self._watch_busy = False
+            if not self.watch_active:
+                return
+            # Le traitement (plan() + execute()) est entierement termine :
+            # c'est le seul moment ou le thread principal reaffecte
+            # self.organizer, jamais le thread de fond lui-meme.
+            self.organizer = worker_organizer
             errors = [m for m in batch["moves"] if m["status"] == "erreur"]
             moved = [m for m in batch["moves"] if m["status"] == "deplace"]
             self.last_real_batch = batch
@@ -724,11 +949,18 @@ class OrganizerGUI(tk.Tk):
                     "disponible pour ce lot.",
                 )
             self._refresh_history_view()
-        else:
-            self.watch_status_var.set(
-                "Veille active : rangement ignore pour ce lot. Il sera reproposé au prochain "
-                "controle stable (meme si le dossier ne change pas d'ici la)."
-            )
+            self._schedule_next_watch_tick()
+
+        def on_error(exc):
+            self._watch_busy = False
+            if not self.watch_active:
+                return
+            self._stop_watch(f"Veille interrompue (erreur inattendue) : {exc}")
+
+        self._run_worker(
+            work, on_success, on_error,
+            track_after_id=lambda after_id: setattr(self, "_watch_after_id", after_id),
+        )
 
     def _check_stale_review_folders(self):
         """Verification silencieuse au demarrage : informe sans jamais
@@ -804,6 +1036,18 @@ class OrganizerGUI(tk.Tk):
             except (ValueError, tk.TclError):
                 pass
             self._stale_review_after_id = None
+        # Meme precaution pour le polling d'une simulation/d'un rangement
+        # reel (Simuler/Ranger les fichiers) encore en cours au moment de la
+        # fermeture : les threads de fond eux-memes sont daemon (ils
+        # s'arretent avec le processus), mais le self.after() qui les
+        # interroge doit etre annule explicitement pour ne jamais tenter
+        # d'invoquer une methode liee a une fenetre deja detruite.
+        if self._action_after_id is not None:
+            try:
+                self.after_cancel(self._action_after_id)
+            except (ValueError, tk.TclError):
+                pass
+            self._action_after_id = None
         try:
             self.destroy()
         except tk.TclError:
