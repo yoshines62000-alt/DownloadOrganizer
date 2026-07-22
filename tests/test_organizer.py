@@ -7,6 +7,7 @@ empecher toute regression future.
 """
 
 import copy
+import io
 import json
 import os
 import sys
@@ -497,6 +498,61 @@ class OrganizerTestCase(unittest.TestCase):
         self.assertEqual(len(result.moves), 1)
         self.assertEqual(result.moves[0].category, "Installateurs")
         self.assertNotIn("incoherente", result.moves[0].reason)
+
+    def test_custom_category_with_docx_extension_is_not_falsely_flagged(self):
+        # Regression trouvee a l'audit (A2) : une categorie personnalisee sur
+        # ".docx" faisait passer 100% des vrais .docx (conteneur ZIP legitime,
+        # signature "Archives") pour une incoherence extension/signature,
+        # puisque la branche "ext_category revendique deja l'extension" ne
+        # consultait pas ZIP_LIKE_NON_ARCHIVE_EXTENSIONS (contrairement a la
+        # branche "extension inconnue" qui, elle, la consultait deja - voir
+        # test_docx_zip_signature_not_misfiled_as_archive pour le cas sans
+        # categorie personnalisee).
+        o = self._organizer(custom_categories=[
+            {"name": "DocumentsOffice", "extensions": [".docx", ".xlsx"], "target": "Documents/Office"},
+        ])
+        self._write_bytes("rapport_reel.docx", b"PK\x03\x04" + b"\x00" * 60)
+        result = o.plan()
+        self.assertEqual(len(result.moves), 1)
+        self.assertEqual(result.moves[0].category, "DocumentsOffice")
+        self.assertNotIn("incoherente", result.moves[0].reason)
+        self.assertEqual(result.moves[0].destination.parent, self.target / "Documents" / "Office")
+
+    def test_custom_category_with_xlsx_extension_is_not_falsely_flagged(self):
+        o = self._organizer(custom_categories=[
+            {"name": "DocumentsOffice", "extensions": [".docx", ".xlsx"], "target": "Documents/Office"},
+        ])
+        self._write_bytes("budget_reel.xlsx", b"PK\x03\x04" + b"\x00" * 60)
+        result = o.plan()
+        self.assertEqual(len(result.moves), 1)
+        self.assertEqual(result.moves[0].category, "DocumentsOffice")
+        self.assertNotIn("incoherente", result.moves[0].reason)
+
+    def test_custom_category_with_epub_extension_is_not_falsely_flagged(self):
+        o = self._organizer(custom_categories=[
+            {"name": "Lectures", "extensions": [".epub"], "target": "Lectures"},
+        ])
+        self._write_bytes("roman_reel.epub", b"PK\x03\x04" + b"\x00" * 60)
+        result = o.plan()
+        self.assertEqual(len(result.moves), 1)
+        self.assertEqual(result.moves[0].category, "Lectures")
+        self.assertNotIn("incoherente", result.moves[0].reason)
+
+    def test_exe_renamed_as_docx_with_custom_category_is_still_flagged_for_review(self):
+        # Non-regression : le garde-fou doit continuer a detecter une vraie
+        # anomalie (executable renomme en .docx) meme quand une categorie
+        # personnalisee revendique l'extension - seul le cas legitime
+        # (signature "Archives") doit etre exempte, pas n'importe quelle
+        # signature.
+        o = self._organizer(custom_categories=[
+            {"name": "DocumentsOffice", "extensions": [".docx"], "target": "Documents/Office"},
+        ])
+        self._write_bytes("cv_candidat.docx", b"MZ" + b"\x00" * 62)
+        result = o.plan()
+        self.assertEqual(len(result.moves), 1)
+        self.assertEqual(result.moves[0].category, "A verifier")
+        self.assertIn("incoherente", result.moves[0].reason)
+        self.assertIn("Installateurs", result.moves[0].reason)
 
     def test_signature_detection_handles_empty_and_short_files(self):
         # Un fichier vide ou plus court que la taille de lecture de signature
@@ -1278,6 +1334,159 @@ class OrganizerTestCase(unittest.TestCase):
         # pre-filtre par hash partiel doit eliminer tous les candidats avant
         # tout hash complet.
         self.assertEqual(len(calls), 0)
+
+
+# ---------------------------------------------------------------------------
+# CLI : tolerance a l'encodage de la console (A12)
+# ---------------------------------------------------------------------------
+
+class CLIUnicodeEncodingTestCase(unittest.TestCase):
+    """Verrouille la regression A12 : sur une console dont l'encodage de
+    sortie ne peut pas representer un caractere (emoji, etc.) present dans un
+    nom de fichier - le cas le plus courant etant cp1252/cp850, le defaut
+    historique de cmd.exe sur Windows - le CLI ne doit plus jamais planter
+    avec un UnicodeEncodeError brut. On simule cette console etroite en
+    remplacant sys.stdout par un vrai io.TextIOWrapper configure en
+    encoding="cp1252", errors="strict" (le comportement par defaut d'un
+    print() non protege).
+
+    N'herite PAS de OrganizerTestCase (contrairement a une premiere version
+    de ce fichier) : le faire executerait une seconde fois, sous ce nouveau
+    nom de classe, tous les tests deja herites de OrganizerTestCase - une
+    isolation minimale dupliquee ici (meme pattern que HistoryJsonlTestCase
+    plus bas) suffit et evite ce doublon."""
+
+    def setUp(self):
+        import tempfile
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(self._cleanup)
+        self._orig_app_dir = org.APP_DIR
+        self._orig_history_file = org.HISTORY_FILE
+        self._orig_config_file = org.CONFIG_FILE
+        self._orig_log_file = org.LOG_FILE
+        org.APP_DIR = self.tmp / "appdata"
+        org.HISTORY_FILE = org.APP_DIR / "history.json"
+        org.CONFIG_FILE = org.APP_DIR / "config.json"
+        org.LOG_FILE = org.APP_DIR / "app.log"
+        for handler in list(org.logger.handlers):
+            handler.close()
+            org.logger.removeHandler(handler)
+
+        self.downloads = self.tmp / "Downloads"
+        self.downloads.mkdir()
+        self.target = self.tmp / "Target"
+        self.target.mkdir()
+
+        self.config = copy.deepcopy(org.DEFAULT_CONFIG)
+        self.config["downloads_dir"] = str(self.downloads)
+        self.config["base_target_dir"] = str(self.target)
+
+    def _cleanup(self):
+        for handler in list(org.logger.handlers):
+            handler.close()
+            org.logger.removeHandler(handler)
+        org.APP_DIR = self._orig_app_dir
+        org.HISTORY_FILE = self._orig_history_file
+        org.CONFIG_FILE = self._orig_config_file
+        org.LOG_FILE = self._orig_log_file
+
+    def _write(self, relative_path: str, content: str = "x"):
+        path = self.downloads / relative_path
+        path.write_text(content)
+        return path
+
+    def _narrow_stdout(self):
+        buffer = io.BytesIO()
+        return buffer, io.TextIOWrapper(buffer, encoding="cp1252", errors="strict")
+
+    def test_print_plan_raises_unicode_error_on_narrow_console_without_fix(self):
+        # Documente le bug d'origine : un print() nu (sans le correctif
+        # _ensure_console_encoding_tolerant) plante bel et bien des qu'un nom
+        # de fichier contient un emoji et que la console ne peut pas
+        # l'encoder - c'est exactement ce que _print_plan faisait avant
+        # correctif, et ce qu'elle ferait de nouveau si le correctif etait
+        # retire.
+        emoji_path = self.downloads / "resume final \U0001F600 2024.pdf"
+        move = org.PlannedMove(
+            source=emoji_path, destination=self.target / "Documents" / "PDF" / emoji_path.name,
+            category="PDF", reason="extension .pdf",
+        )
+        result = org.OrganizeResult(moves=[move])
+        buffer, narrow_stdout = self._narrow_stdout()
+        old_stdout = sys.stdout
+        sys.stdout = narrow_stdout
+        try:
+            with self.assertRaises(UnicodeEncodeError):
+                org._print_plan(result)
+        finally:
+            sys.stdout = old_stdout
+            narrow_stdout.close()
+
+    def test_print_plan_does_not_crash_on_narrow_console_after_fix(self):
+        emoji_path = self.downloads / "resume final \U0001F600 2024.pdf"
+        move = org.PlannedMove(
+            source=emoji_path, destination=self.target / "Documents" / "PDF" / emoji_path.name,
+            category="PDF", reason="extension .pdf",
+        )
+        result = org.OrganizeResult(moves=[move])
+        buffer, narrow_stdout = self._narrow_stdout()
+        old_stdout = sys.stdout
+        sys.stdout = narrow_stdout
+        try:
+            org._ensure_console_encoding_tolerant()
+            org._print_plan(result)  # ne doit lever aucune exception
+            narrow_stdout.flush()
+            # Lu AVANT la fermeture du TextIOWrapper : fermer narrow_stdout
+            # ferme aussi le BytesIO sous-jacent (buffer.getvalue() leverait
+            # "I/O operation on closed file" apres coup).
+            output = buffer.getvalue().decode("cp1252", errors="replace")
+        finally:
+            sys.stdout = old_stdout
+            narrow_stdout.close()
+        # Le nom de fichier reste identifiable (repli \uXXXX lisible) plutot
+        # que de faire disparaitre completement l'information.
+        self.assertIn("resume final", output)
+        self.assertIn("2024.pdf", output)
+
+    def test_ensure_console_encoding_tolerant_is_a_no_op_without_reconfigure(self):
+        # Un flux mocke/redirige sans .reconfigure() (certains environnements
+        # de test/CI non interactifs) ne doit jamais faire planter l'appel -
+        # le correctif se contente de ne rien faire dans ce cas.
+        class _StreamWithoutReconfigure:
+            pass
+
+        old_stdout, old_stderr = sys.stdout, sys.stderr
+        sys.stdout = _StreamWithoutReconfigure()
+        sys.stderr = _StreamWithoutReconfigure()
+        try:
+            org._ensure_console_encoding_tolerant()  # ne doit lever aucune exception
+        finally:
+            sys.stdout = old_stdout
+            sys.stderr = old_stderr
+
+    def test_main_cli_simulation_does_not_crash_on_emoji_filename(self):
+        # Reproduction bout-en-bout du crash CLI original (A12) : "python
+        # organizer.py" en mode simulation, sur un dossier contenant un
+        # fichier dont le nom contient un emoji, avec une console dont
+        # l'encodage de sortie ne supporte pas les emojis. Avant correctif,
+        # ceci levait un UnicodeEncodeError non intercepte et un code de
+        # sortie 1 sans qu'aucun plan ne soit affiche.
+        self._write("resume final \U0001F600 2024.pdf", "contenu")
+        org.save_config(self.config)  # downloads_dir/base_target_dir de test (voir setUp)
+        buffer, narrow_stdout = self._narrow_stdout()
+        old_stdout = sys.stdout
+        sys.stdout = narrow_stdout
+        try:
+            exit_code = org.main([])
+            narrow_stdout.flush()
+            output = buffer.getvalue().decode("cp1252", errors="replace")
+        finally:
+            sys.stdout = old_stdout
+            narrow_stdout.close()
+        self.assertEqual(exit_code, 0)
+        self.assertIn("resume final", output)
+        # Le fichier ne doit pas avoir ete deplace (mode simulation par defaut).
+        self.assertTrue((self.downloads / "resume final \U0001F600 2024.pdf").exists())
 
 
 # ---------------------------------------------------------------------------

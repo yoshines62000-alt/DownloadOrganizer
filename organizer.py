@@ -1028,6 +1028,22 @@ class DownloadOrganizer:
             category = ext_category
             reason = ""
 
+            # Un document bureautique/conteneur ZIP legitime (docx/xlsx/epub/
+            # jar/...) est TOUJOURS detecte avec la signature "Archives" (un
+            # tel fichier est litteralement un ZIP en interne) : ce n'est
+            # jamais une incoherence a signaler, quelle que soit la categorie
+            # qui revendique l'extension - integree (cas ci-dessous, aucune
+            # categorie integree ne revendique ces extensions) OU
+            # PERSONNALISEE (bug trouve a l'audit : une categorie
+            # personnalisee sur ".docx"/".xlsx"/etc. faisait passer
+            # systematiquement 100% de ces fichiers legitimes pour une
+            # incoherence extension/signature, faute pour la branche
+            # ci-dessous de considerer ce garde-fou). Calcule une seule fois
+            # et utilise comme garde commune aux deux branches qui suivent.
+            zip_like_container_ok = (
+                suffix in ZIP_LIKE_NON_ARCHIVE_EXTENSIONS and signature_category == "Archives"
+            )
+
             # Coherence extension/signature verifiee AVANT tout routage par
             # motif de nom : un motif de nom (ex: "*.pdf" pour tout envoyer
             # vers "Factures") choisit OU va le fichier, mais ne doit jamais
@@ -1040,7 +1056,12 @@ class DownloadOrganizer:
             # l'audit). Un motif de nom NARROW cible comme "facture*.pdf"
             # applique sur un vrai PDF ne declenche jamais cette branche,
             # puisqu'il n'y a alors aucune incoherence reelle.
-            if ext_category is not None and signature_category is not None and signature_category != ext_category:
+            if (
+                ext_category is not None
+                and signature_category is not None
+                and signature_category != ext_category
+                and not zip_like_container_ok
+            ):
                 category = OLD_FILES_TARGET
                 reason = (
                     f"extension '{suffix}' incoherente avec le contenu reel du fichier "
@@ -1050,7 +1071,7 @@ class DownloadOrganizer:
                 ext_category is None
                 and suffix in ZIP_LIKE_NON_ARCHIVE_EXTENSIONS
                 and signature_category is not None
-                and signature_category != "Archives"
+                and not zip_like_container_ok
             ):
                 # Le garde-fou ZIP_LIKE_NON_ARCHIVE_EXTENSIONS ne doit couvrir
                 # QUE le cas legitime ou un document bureautique (docx/xlsx/
@@ -1574,6 +1595,34 @@ def _html_escape(value: str) -> str:
 # CLI
 # ---------------------------------------------------------------------------
 
+def _ensure_console_encoding_tolerant() -> None:
+    """Empeche le CLI de planter avec un UnicodeEncodeError brut quand un nom
+    de fichier contient un caractere (emoji, etc.) hors du code page de la
+    console (bug trouve a l'audit, A12) : sur une invite Windows standard non
+    explicitement basculee en UTF-8, sys.stdout/sys.stderr utilisent par
+    defaut le code page heritee de la console (souvent cp1252/cp850), qui ne
+    peut pas encoder la plupart des emojis. print() levait alors une
+    exception non interceptee AVANT meme d'avoir affiche le moindre plan.
+    reconfigure(errors="backslashreplace") (disponible depuis Python 3.7)
+    remplace un caractere non encodable par sa representation "\\uXXXX"
+    lisible plutot que de faire planter tout le programme - le nom de
+    fichier reste identifiable meme si l'emoji ne s'affiche pas litteralement."""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            # Flux redirige/mocke sans .reconfigure() (tests, certains
+            # environnements non interactifs) : rien a faire, ce n'est de
+            # toute facon pas le cas vise par ce correctif (une vraie console
+            # Windows).
+            continue
+        try:
+            reconfigure(errors="backslashreplace")
+        except (ValueError, OSError):
+            # Flux deja ferme ou ne supportant pas reconfigure() pour cette
+            # option : ne doit jamais empecher le CLI de demarrer.
+            pass
+
+
 def _print_plan(result: OrganizeResult) -> None:
     if result.errors:
         for path, err in result.errors:
@@ -1593,6 +1642,12 @@ def _print_plan(result: OrganizeResult) -> None:
 
 def main(argv: Optional[list] = None) -> int:
     import argparse
+
+    # Voir _ensure_console_encoding_tolerant : doit s'executer avant le
+    # moindre print() (y compris ceux du mode --undo et du mode --gui), sinon
+    # un nom de fichier contenant un caractere hors code page console fait
+    # planter le CLI avec un traceback brut (bug trouve a l'audit, A12).
+    _ensure_console_encoding_tolerant()
 
     parser = argparse.ArgumentParser(description="Nettoyeur intelligent du dossier Telechargements")
     parser.add_argument("--run", action="store_true", help="Execute reellement les deplacements (sinon simulation)")

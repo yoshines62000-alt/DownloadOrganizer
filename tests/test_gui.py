@@ -393,6 +393,246 @@ class GuiTestCase(unittest.TestCase):
         status_bottom = (status_label.winfo_rooty() - self.app.winfo_rooty()) + status_label.winfo_height()
         self.assertLessEqual(status_bottom, win_h, "la barre de statut deborde de la fenetre par defaut")
 
+    # -- D1/D3 : priorite donnee a la zone de resultats (Apercu/Historique) -
+
+    def test_default_window_apercu_table_has_generous_vertical_space(self):
+        # Regression D1 (audit) : a la taille par defaut, les sections de
+        # reglages (Exclusions personnalisees, Categories personnalisees,
+        # Mode Veille) occupaient ~700px de hauteur au-dessus du Notebook,
+        # ne laissant que 4-5 lignes visibles dans le tableau "Apercu" meme
+        # apres une simulation en ayant planifie beaucoup plus. Ces sections
+        # sont desormais regroupees dans leur propre onglet "Reglages
+        # avances", ce qui doit liberer nettement plus d'espace vertical
+        # pour l'apercu par defaut (onglet actif a l'ouverture).
+        self.app.update()
+        self.assertTrue(self.app.preview_tree.winfo_ismapped())
+        self.assertGreater(
+            self.app.preview_tree.winfo_height(), 300,
+            "le tableau Apercu reste fortement comprime a la taille par defaut",
+        )
+
+        from tkinter import ttk
+        notebooks = [c for c in self.app.winfo_children() if isinstance(c, ttk.Notebook)]
+        self.assertEqual(len(notebooks), 1)
+        notebook = notebooks[0]
+        tab_texts = [notebook.tab(tab_id, "text") for tab_id in notebook.tabs()]
+        self.assertIn("Reglages avances", tab_texts)
+        # L'apercu doit rester l'onglet actif par defaut a l'ouverture -
+        # c'est l'ecran le plus important, il ne doit jamais etre relegue
+        # derriere l'onglet de reglages.
+        selected = notebook.select()
+        self.assertEqual(notebook.tab(selected, "text"), "Apercu")
+
+    def test_settings_widgets_still_reachable_from_reglages_avances_tab(self):
+        # Les reglages deplaces dans leur propre onglet (D1) doivent rester
+        # entierement fonctionnels : les memes attributs/widgets existent
+        # toujours et pointent vers des donnees coherentes, seul leur parent
+        # visuel a change.
+        self.assertTrue(self.app.categories_tree.winfo_exists())
+        self.assertTrue(self.app.watch_btn.winfo_exists())
+        self.app.excl_ext_var.set(".bak, .old")
+        config = self.app._collect_config()
+        self.assertIsNotNone(config)
+        self.assertEqual(config["exclusions"]["extensions"], [".bak", ".old"])
+
+    def test_window_at_minsize_keeps_result_notebook_visible(self):
+        # Regression D3 (audit) : redimensionner la fenetre a sa taille
+        # minimale declaree (minsize) faisait disparaitre ENTIEREMENT le
+        # Notebook Apercu/Historique (hauteur ecrasee a 0/quasi-0), alors
+        # que minsize est censee rester une taille utilisable. Les reglages
+        # avances etant desormais dans leur propre onglet defilable (voir
+        # _make_scrollable_frame), le contenu au-dessus du Notebook est
+        # nettement plus court et ne doit plus, a lui seul, epuiser toute la
+        # hauteur minimale de la fenetre.
+        self.app.update()
+        min_w, min_h = self.app.minsize()
+        self.app.geometry(f"{min_w}x{min_h}")
+        self.app.update()
+
+        from tkinter import ttk
+        notebooks = [c for c in self.app.winfo_children() if isinstance(c, ttk.Notebook)]
+        notebook = notebooks[0]
+        self.assertTrue(notebook.winfo_ismapped(), "le Notebook Apercu/Historique a disparu a la taille minimale")
+        self.assertGreater(
+            notebook.winfo_height(), 100,
+            "le Notebook Apercu/Historique est ecrase a une hauteur inutilisable a la taille minimale",
+        )
+
+    # -- D2 : infobulle sur la colonne "Raison" (texte tronque a l'affichage) -
+
+    def _hover_column(self, tooltip, tree, item, column):
+        bbox = tree.bbox(item, column)
+        self.assertTrue(bbox, f"cellule '{column}' introuvable/hors ecran (bbox vide)")
+        x, y, w, h = bbox
+        import types
+        fake_event = types.SimpleNamespace(x=x + 5, y=y + h // 2)
+        tooltip._on_motion(fake_event)
+        return fake_event
+
+    def test_preview_raison_tooltip_shows_full_text_on_hover(self):
+        long_reason = (
+            "extension '.pdf' incoherente avec le contenu reel du fichier "
+            "(signature detectee : Installateurs) - verification manuelle recommandee"
+        )
+        move = org.PlannedMove(
+            source=self.downloads / "facture_suspecte.pdf",
+            destination=self.target / "A verifier" / "facture_suspecte.pdf",
+            category="A verifier", reason=long_reason,
+        )
+        result = org.OrganizeResult(moves=[move])
+        self.app._fill_preview(result)
+        self.app.update()
+
+        item = self.app.preview_tree.get_children()[0]
+        tooltip = self.app._preview_reason_tooltip
+        self._hover_column(tooltip, self.app.preview_tree, item, "raison")
+
+        self.assertIsNotNone(tooltip._tooltip, "aucune infobulle n'est apparue au survol de la colonne Raison")
+        # Regression trouvee en ecrivant ce test : _show() appelait l'ancien
+        # _hide() (qui reinitialise _last_key), annulant aussitot le
+        # _last_key que _on_motion venait de positionner. Verrouille ici
+        # explicitement pour ne pas la reintroduire.
+        row_id = item
+        col_id = "#4"  # "raison" est la 4e colonne declaree du preview_tree
+        self.assertEqual(tooltip._last_key, (row_id, col_id))
+
+        label = tooltip._tooltip.winfo_children()[0]
+        self.assertEqual(label.cget("text"), long_reason)
+        # Largeur de colonne (160px a l'origine, elargie a 260px) : le texte
+        # integral affiche par l'infobulle doit rester plus long que ce que
+        # la colonne peut afficher, sinon ce test ne verrouille plus rien.
+        self.assertGreater(len(long_reason), self.app.preview_tree.column("raison", "width") // 6)
+
+    def test_preview_raison_tooltip_reuses_same_window_while_hovering_same_cell(self):
+        # Survoler deux fois de suite EXACTEMENT la meme cellule (ce qui
+        # arrive en continu avec de vrais evenements <Motion> pendant que la
+        # souris reste immobile) ne doit ni detruire ni recreer l'infobulle -
+        # directement du au correctif du bug _last_key ci-dessus.
+        move = org.PlannedMove(
+            source=self.downloads / "a.pdf", destination=self.target / "PDF" / "a.pdf",
+            category="PDF", reason="raison suffisamment longue pour ce test de non-regression",
+        )
+        result = org.OrganizeResult(moves=[move])
+        self.app._fill_preview(result)
+        self.app.update()
+
+        item = self.app.preview_tree.get_children()[0]
+        tooltip = self.app._preview_reason_tooltip
+        self._hover_column(tooltip, self.app.preview_tree, item, "raison")
+        first_window = tooltip._tooltip
+        self.assertIsNotNone(first_window)
+
+        self._hover_column(tooltip, self.app.preview_tree, item, "raison")
+        self.assertIs(tooltip._tooltip, first_window)
+
+    def test_preview_raison_tooltip_hides_on_leave(self):
+        move = org.PlannedMove(
+            source=self.downloads / "a.pdf", destination=self.target / "PDF" / "a.pdf",
+            category="PDF", reason="raison suffisamment longue pour ce test de non-regression",
+        )
+        result = org.OrganizeResult(moves=[move])
+        self.app._fill_preview(result)
+        self.app.update()
+
+        item = self.app.preview_tree.get_children()[0]
+        tooltip = self.app._preview_reason_tooltip
+        self._hover_column(tooltip, self.app.preview_tree, item, "raison")
+        self.assertIsNotNone(tooltip._tooltip)
+
+        tooltip._hide()
+        self.assertIsNone(tooltip._tooltip)
+        self.assertIsNone(tooltip._last_key)
+
+    # -- D4 : dialogue "Detail du lot" - toutes les colonnes doivent tenir --
+
+    def test_batch_detail_dialog_shows_all_declared_columns_including_erreur(self):
+        # Regression D4 (audit) : les 6 colonnes declarees (fichier,
+        # categorie, destination, raison, statut, erreur) totalisaient
+        # 940px alors que le dialogue ne faisait que 820px de large - la
+        # colonne "Erreur" (la plus a droite, celle qui explique POURQUOI
+        # un deplacement a echoue) n'etait pas du tout visible sans
+        # redimensionnement manuel.
+        long_error = (
+            "[WinError 32] Le processus ne peut pas acceder au fichier car ce fichier "
+            "est utilise par un autre processus: 'C:\\\\Users\\\\test\\\\Downloads\\\\photo.jpg' "
+            "(fichier partiel nettoye a la destination)"
+        )
+        batch = {
+            "timestamp": "2026-07-22 08:00:00",
+            "simulated": False,
+            "moves": [
+                {
+                    "source": str(self.downloads / "photo.jpg"),
+                    "destination": str(self.target / "Images" / "photo.jpg"),
+                    "category": "Images", "reason": "extension .jpg", "status": "erreur",
+                    "error": long_error,
+                },
+                {
+                    "source": str(self.downloads / "a.pdf"),
+                    "destination": str(self.target / "PDF" / "a.pdf"),
+                    "category": "PDF", "reason": "extension .pdf", "status": "deplace",
+                },
+            ],
+        }
+        org.append_batch_to_history(batch)
+        self.app._refresh_history_view()
+        children = self.app.history_tree.get_children()
+        self.assertEqual(len(children), 1)
+        self.app.history_tree.selection_set(children[0])
+
+        before = {w for w in self.app.winfo_children() if w.winfo_class() == "Toplevel"}
+        self.app._show_batch_detail()
+        self.addCleanup(self._close_stray_toplevels, before)
+        self.app.update()
+        after = [w for w in self.app.winfo_children() if w.winfo_class() == "Toplevel"]
+        new_toplevels = [w for w in after if w not in before]
+        self.assertEqual(len(new_toplevels), 1, "le dialogue 'Detail du lot' ne s'est pas ouvert")
+        dialog = new_toplevels[0]
+        dialog.update()
+
+        from tkinter import ttk
+
+        def find_treeview(widget):
+            for child in widget.winfo_children():
+                if isinstance(child, ttk.Treeview):
+                    return child
+                found = find_treeview(child)
+                if found is not None:
+                    return found
+            return None
+
+        tree = find_treeview(dialog)
+        self.assertIsNotNone(tree, "Treeview du dialogue 'Detail du lot' introuvable")
+
+        columns = tree["columns"]
+        self.assertIn("erreur", columns)
+        total_width = sum(tree.column(c, "width") for c in columns)
+        dialog_width = dialog.winfo_width()
+        self.assertLessEqual(
+            total_width, dialog_width,
+            f"les colonnes ({total_width}px) depassent la largeur du dialogue ({dialog_width}px)",
+        )
+
+        error_item = None
+        for item in tree.get_children():
+            if tree.set(item, "erreur"):
+                error_item = item
+                break
+        self.assertIsNotNone(error_item, "aucune ligne avec une erreur trouvee")
+        self.assertEqual(tree.set(error_item, "erreur"), long_error)
+        erreur_bbox = tree.bbox(error_item, "erreur")
+        self.assertTrue(erreur_bbox, "la cellule 'Erreur' n'est pas visible (bbox vide)")
+        ex, ey, ew, eh = erreur_bbox
+        self.assertLessEqual(ex + ew, tree.winfo_width() + 2, "la cellule 'Erreur' deborde du Treeview visible")
+
+    def _close_stray_toplevels(self, before):
+        for w in [c for c in self.app.winfo_children() if c.winfo_class() == "Toplevel"]:
+            if w not in before:
+                try:
+                    w.destroy()
+                except Exception:
+                    pass
+
 
 if __name__ == "__main__":
     unittest.main()

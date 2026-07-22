@@ -48,6 +48,100 @@ def _stat_signature(path: Path):
         return (None, None)
 
 
+class _TreeviewCellTooltip:
+    """Infobulle affichant le texte INTEGRAL d'une cellule de Treeview au
+    survol, pour une colonne donnee (correctif audit D2/D4) : la colonne
+    "Raison" (et, dans le dialogue "Detail du lot", "Erreur") peut contenir
+    un message plus long que la largeur de colonne affichee, tronque
+    visuellement par Tk sans aucune indication qu'il manque du texte. La
+    valeur stockee dans le Treeview reste toujours integrale (c'est un
+    simple probleme d'affichage) ; cette infobulle se contente de la
+    re-afficher en entier au survol, sans modifier la donnee elle-meme."""
+
+    def __init__(self, tree: "ttk.Treeview", column_names):
+        self.tree = tree
+        self.column_names = set(column_names)
+        self._tooltip = None
+        self._last_key = None
+        tree.bind("<Motion>", self._on_motion, add="+")
+        tree.bind("<Leave>", self._hide, add="+")
+        # Toute action qui peut faire bouger/disparaitre la cellule survolee
+        # (defilement, redimensionnement de colonne) doit aussi faire
+        # disparaitre l'infobulle plutot que de la laisser desynchronisee.
+        tree.bind("<ButtonPress>", self._hide, add="+")
+
+    def _on_motion(self, event):
+        if self.tree.identify_region(event.x, event.y) != "cell":
+            self._hide()
+            return
+        row_id = self.tree.identify_row(event.y)
+        col_id = self.tree.identify_column(event.x)  # ex: "#4"
+        if not row_id or not col_id:
+            self._hide()
+            return
+        try:
+            col_index = int(col_id.lstrip("#")) - 1
+        except ValueError:
+            self._hide()
+            return
+        columns = self.tree["columns"]
+        if not (0 <= col_index < len(columns)) or columns[col_index] not in self.column_names:
+            self._hide()
+            return
+        value = self.tree.set(row_id, columns[col_index])
+        if not value:
+            self._hide()
+            return
+        key = (row_id, col_id)
+        if key != self._last_key:
+            self._last_key = key
+            self._show(value)
+        self._position(event)
+
+    def _show(self, text: str):
+        # Detruit une eventuelle infobulle precedente SANS reinitialiser
+        # self._last_key (contrairement a _hide ci-dessous) : _on_motion
+        # vient tout juste d'affecter self._last_key juste avant d'appeler
+        # _show - le reinitialiser ici l'annulerait aussitot (bug trouve
+        # pendant l'ecriture du test de fumee D2 : l'infobulle apparaissait
+        # bien un instant, puis self._last_key valait de nouveau None, ce
+        # qui la faisait immediatement re-creer/redisparaitre au moindre
+        # evenement <Motion> suivant).
+        self._destroy_tooltip_window()
+        self._tooltip = tk.Toplevel(self.tree)
+        self._tooltip.wm_overrideredirect(True)
+        try:
+            self._tooltip.wm_attributes("-topmost", True)
+        except tk.TclError:
+            pass
+        ttk.Label(
+            self._tooltip, text=text, background="#ffffe0", foreground="#000000",
+            relief="solid", borderwidth=1, padding=(6, 3), wraplength=520, justify="left",
+        ).pack()
+
+    def _position(self, event):
+        if self._tooltip is None:
+            return
+        x = self.tree.winfo_rootx() + event.x + 16
+        y = self.tree.winfo_rooty() + event.y + 16
+        try:
+            self._tooltip.wm_geometry(f"+{x}+{y}")
+        except tk.TclError:
+            pass
+
+    def _destroy_tooltip_window(self):
+        if self._tooltip is not None:
+            try:
+                self._tooltip.destroy()
+            except tk.TclError:
+                pass
+            self._tooltip = None
+
+    def _hide(self, event=None):
+        self._destroy_tooltip_window()
+        self._last_key = None
+
+
 class OrganizerGUI(tk.Tk):
     def __init__(self):
         super().__init__()
@@ -112,6 +206,43 @@ class OrganizerGUI(tk.Tk):
     # Construction de l'UI
     # ------------------------------------------------------------------
 
+    def _make_scrollable_frame(self, parent):
+        """Enveloppe un Canvas+Scrollbar verticale standard autour d'un
+        ttk.Frame interne, retourne (canvas, inner_frame) : `inner_frame` est
+        le parent a utiliser pour tout widget devant defiler si son contenu
+        depasse la hauteur disponible (voir onglet "Reglages avances",
+        correctif audit D3 - a la taille minimale de la fenetre, ces reglages
+        ne doivent plus jamais ecraser la zone de resultats, ils doivent
+        simplement devenir defilables)."""
+        canvas = tk.Canvas(parent, highlightthickness=0)
+        vscroll = ttk.Scrollbar(parent, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=vscroll.set)
+        canvas.pack(side="left", fill="both", expand=True)
+        vscroll.pack(side="right", fill="y")
+
+        inner = ttk.Frame(canvas)
+        window_id = canvas.create_window((0, 0), window=inner, anchor="nw")
+
+        def _on_inner_configure(event):
+            canvas.configure(scrollregion=canvas.bbox("all"))
+
+        def _on_canvas_configure(event):
+            canvas.itemconfigure(window_id, width=event.width)
+
+        inner.bind("<Configure>", _on_inner_configure)
+        canvas.bind("<Configure>", _on_canvas_configure)
+
+        def _on_mousewheel(event):
+            canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+        # Molette active uniquement pendant que le curseur survole cette zone
+        # precise : eviter un bind_all() permanent qui capturerait aussi la
+        # molette au-dessus des autres Treeview (Apercu/Historique).
+        canvas.bind("<Enter>", lambda e: canvas.bind_all("<MouseWheel>", _on_mousewheel))
+        canvas.bind("<Leave>", lambda e: canvas.unbind_all("<MouseWheel>"))
+
+        return canvas, inner
+
     def _build_widgets(self):
         top = ttk.Frame(self, padding=10)
         top.pack(fill="x")
@@ -132,107 +263,15 @@ class OrganizerGUI(tk.Tk):
 
         top.columnconfigure(1, weight=1)
 
-        # Exclusions
-        excl_frame = ttk.LabelFrame(self, text="Exclusions personnalisees", padding=10)
-        excl_frame.pack(fill="x", padx=10, pady=(0, 10))
-
-        ttk.Label(excl_frame, text="Extensions (separees par des virgules, ex: .tmp,.log)").grid(row=0, column=0, sticky="w")
-        self.excl_ext_var = tk.StringVar(value=", ".join(self.config_data["exclusions"].get("extensions", [])))
-        ttk.Entry(excl_frame, textvariable=self.excl_ext_var, width=40).grid(row=0, column=1, sticky="we", padx=5)
-
-        ttk.Label(excl_frame, text="Noms de fichiers exacts (separes par des virgules)").grid(row=1, column=0, sticky="w", pady=(4, 0))
-        self.excl_names_var = tk.StringVar(value=", ".join(self.config_data["exclusions"].get("filenames", [])))
-        ttk.Entry(excl_frame, textvariable=self.excl_names_var, width=40).grid(row=1, column=1, sticky="we", padx=5, pady=(4, 0))
-
-        ttk.Label(
-            excl_frame,
-            text="Motifs additionnels (glob, ex: *.bak) - s'ajoutent aux protections integrees (*.crdownload, *.part, *.tmp, desktop.ini, *.download), qui restent toujours actives",
-        ).grid(row=2, column=0, sticky="w", pady=(4, 0))
-        self.excl_patterns_var = tk.StringVar(value=", ".join(self.config_data["exclusions"].get("patterns", [])))
-        ttk.Entry(excl_frame, textvariable=self.excl_patterns_var, width=40).grid(row=2, column=1, sticky="we", padx=5, pady=(4, 0))
-
-        excl_frame.columnconfigure(1, weight=1)
-
-        # Categories personnalisees (au-dela des categories integrees :
-        # PDF, Images, Archives, Installateurs, Videos, Audio - celles-ci
-        # gardent leur comportement integre - dont, pour les quatre
-        # premieres, la detection par signature de fichier - et ne sont
-        # pas modifiables ici)
-        cat_frame = ttk.LabelFrame(self, text="Categories personnalisees", padding=10)
-        cat_frame.pack(fill="x", padx=10, pady=(0, 10))
-
-        self.custom_categories = copy.deepcopy(self.config_data.get("custom_categories", []))
-
-        cat_columns = ("name", "extensions", "patterns", "target")
-        self.categories_tree = ttk.Treeview(cat_frame, columns=cat_columns, show="headings", height=4)
-        for col, label, width in [
-            ("name", "Nom", 120), ("extensions", "Extensions", 160),
-            ("patterns", "Motifs de nom", 160), ("target", "Dossier cible", 180),
-        ]:
-            self.categories_tree.heading(col, text=label)
-            self.categories_tree.column(col, width=width, anchor="w")
-        self.categories_tree.grid(row=0, column=0, columnspan=4, sticky="we", pady=(0, 6))
-        self._refresh_categories_tree()
-
-        ttk.Label(cat_frame, text="Nom").grid(row=1, column=0, sticky="w")
-        self.new_category_name_var = tk.StringVar()
-        ttk.Entry(cat_frame, textvariable=self.new_category_name_var, width=16).grid(row=2, column=0, sticky="we", padx=(0, 5))
-        ttk.Label(cat_frame, text="Extensions (ex: .mp3,.flac)").grid(row=1, column=1, sticky="w")
-        self.new_category_ext_var = tk.StringVar()
-        ttk.Entry(cat_frame, textvariable=self.new_category_ext_var, width=20).grid(row=2, column=1, sticky="we", padx=5)
-        ttk.Label(cat_frame, text="Motifs de nom (optionnel, ex: facture*.pdf)").grid(row=1, column=2, sticky="w")
-        self.new_category_patterns_var = tk.StringVar()
-        ttk.Entry(cat_frame, textvariable=self.new_category_patterns_var, width=20).grid(row=2, column=2, sticky="we", padx=5)
-        ttk.Label(cat_frame, text="Dossier cible (relatif a la destination racine)").grid(row=1, column=3, sticky="w")
-        self.new_category_target_var = tk.StringVar()
-        ttk.Entry(cat_frame, textvariable=self.new_category_target_var, width=18).grid(row=2, column=3, sticky="we", padx=5)
-        ttk.Button(cat_frame, text="Ajouter", command=self._add_custom_category).grid(row=2, column=4, sticky="w", padx=(5, 0))
-        ttk.Button(cat_frame, text="Supprimer la categorie selectionnee", command=self._remove_custom_category).grid(
-            row=3, column=0, columnspan=5, sticky="w", pady=(6, 0)
-        )
-        ttk.Label(
-            cat_frame,
-            text="Un motif de nom (ex: facture*.pdf, Capture*.png) est prioritaire sur l'extension, "
-            "y compris celle d'une categorie integree - laissez vide pour un tri par extension seule.",
-            foreground="#666",
-        ).grid(row=4, column=0, columnspan=5, sticky="w", pady=(4, 0))
-        cat_frame.columnconfigure(1, weight=1)
-        cat_frame.columnconfigure(2, weight=1)
-        cat_frame.columnconfigure(3, weight=1)
-
-        # Mode Veille (surveillance optionnelle)
-        watch_frame = ttk.LabelFrame(self, text="Mode Veille (optionnel)", padding=10)
-        watch_frame.pack(fill="x", padx=10, pady=(0, 10))
-
-        ttk.Label(watch_frame, text="Verifier le dossier toutes les").grid(row=0, column=0, sticky="w")
-        self.watch_interval_var = tk.StringVar(
-            value=str(self.config_data.get("watch_interval_seconds", DEFAULT_WATCH_INTERVAL_SECONDS))
-        )
-        ttk.Spinbox(watch_frame, from_=5, to=3600, textvariable=self.watch_interval_var, width=6).grid(
-            row=0, column=1, sticky="w", padx=5
-        )
-        ttk.Label(watch_frame, text="secondes").grid(row=0, column=2, sticky="w")
-        self.watch_btn = ttk.Button(watch_frame, text="Activer la veille", command=self._toggle_watch)
-        self.watch_btn.grid(row=0, column=3, sticky="w", padx=(20, 0))
-        self.watch_status_var = tk.StringVar(value="Veille inactive.")
-        ttk.Label(watch_frame, textvariable=self.watch_status_var, foreground="#555").grid(
-            row=1, column=0, columnspan=4, sticky="w", pady=(4, 0)
-        )
-        ttk.Label(
-            watch_frame,
-            text=(
-                "La veille surveille le dossier en arriere-plan mais ne deplace jamais rien "
-                "automatiquement : une confirmation groupee vous est toujours demandee des que "
-                "de nouveaux fichiers sont detectes et stables (plus aucun telechargement en cours)."
-            ),
-            wraplength=760,
-            foreground="#555",
-        ).grid(row=2, column=0, columnspan=4, sticky="w", pady=(2, 0))
-
         # Boutons d'action, repartis sur deux rangees : un seul rang de 6
         # boutons deborde de la fenetre par defaut (largeur fixe 880px) et
         # tronque/cache les derniers boutons plutot que de les faire passer
-        # a la ligne (ttk.Frame + pack(side="left") ne wrap jamais).
+        # a la ligne (ttk.Frame + pack(side="left") ne wrap jamais). Ces
+        # boutons sont packes juste apres les chemins essentiels et AVANT le
+        # Notebook de resultats (voir plus bas) : contrairement aux reglages
+        # avances (Exclusions/Categories/Veille, deplaces dans leur propre
+        # onglet du Notebook - voir correctif audit D1/D3), ils doivent
+        # rester visibles en permanence quel que soit l'onglet actif.
         btn_frame_1 = ttk.Frame(self, padding=(10, 0))
         btn_frame_1.pack(fill="x")
         btn_frame_2 = ttk.Frame(self, padding=(10, 4))
@@ -277,7 +316,19 @@ class OrganizerGUI(tk.Tk):
         donate_label.pack(side="right", padx=8)
         donate_label.bind("<Button-1>", lambda event: webbrowser.open(DONATE_URL))
 
-        # Notebook: apercu + historique
+        # Notebook: apercu + historique + reglages avances. Priorite donnee a
+        # la zone de resultats (correctif audit D1/D3) : seuls les chemins
+        # essentiels et les boutons d'action restent en permanence au-dessus
+        # de ce Notebook - les reglages consultes/modifies occasionnellement
+        # (Exclusions personnalisees, Categories personnalisees, Mode
+        # Veille) sont regroupes dans leur propre onglet "Reglages avances"
+        # plutot que d'occuper en permanence ~500px de hauteur au-dessus du
+        # tableau d'apercu. Consequence directe : a la taille par defaut, le
+        # tableau d'apercu dispose de nettement plus de lignes visibles sans
+        # defilement ; a la taille minimale de la fenetre (minsize), le
+        # Notebook - et donc l'apercu/l'historique - reste visible au lieu de
+        # disparaitre entierement (avant correctif, le contenu au-dessus du
+        # Notebook depassait a lui seul la hauteur minimale de la fenetre).
         notebook = ttk.Notebook(self)
         notebook.pack(fill="both", expand=True, padx=10, pady=10)
 
@@ -289,8 +340,15 @@ class OrganizerGUI(tk.Tk):
         for col, label, width in [
             ("fichier", "Fichier", 200),
             ("categorie", "Categorie", 110),
-            ("destination", "Destination", 320),
-            ("raison", "Raison", 160),
+            ("destination", "Destination", 300),
+            # Colonne la plus large par defaut (correctif audit D2) : c'est
+            # elle qui affiche le message de securite le plus important de
+            # l'application ("extension incoherente avec le contenu reel du
+            # fichier..."), auparavant la plus etroite (160px) alors qu'elle
+            # contient le texte le plus long. Complete par une infobulle au
+            # survol (voir _TreeviewCellTooltip ci-dessous) qui affiche le
+            # texte integral quelle que soit la largeur de colonne.
+            ("raison", "Raison", 260),
         ]:
             self.preview_tree.heading(col, text=label)
             self.preview_tree.column(col, width=width, anchor="w")
@@ -298,6 +356,10 @@ class OrganizerGUI(tk.Tk):
         scroll = ttk.Scrollbar(preview_frame, orient="vertical", command=self.preview_tree.yview)
         self.preview_tree.configure(yscrollcommand=scroll.set)
         scroll.pack(fill="y", side="right")
+        # Infobulle sur la colonne "Raison" (correctif audit D2) : la donnee
+        # stockee dans le Treeview a toujours ete integrale, seul l'affichage
+        # etait tronque sans aucune indication qu'il manquait du texte.
+        self._preview_reason_tooltip = _TreeviewCellTooltip(self.preview_tree, ["raison"])
 
         history_frame = ttk.Frame(notebook)
         notebook.add(history_frame, text="Historique")
@@ -326,6 +388,120 @@ class OrganizerGUI(tk.Tk):
         self.history_tree.configure(yscrollcommand=hscroll.set)
         hscroll.pack(fill="y", side="right")
         self.history_tree.bind("<Double-1>", lambda event: self._show_batch_detail())
+
+        # Onglet "Reglages avances" : regroupe les sections modifiees
+        # seulement occasionnellement (Exclusions personnalisees, Categories
+        # personnalisees, Mode Veille), enveloppees dans un Canvas defilable
+        # (voir _make_scrollable_frame) pour ne jamais ecraser le Notebook
+        # meme si leur contenu total depasse la hauteur disponible a la
+        # taille minimale de la fenetre.
+        settings_frame = ttk.Frame(notebook)
+        notebook.add(settings_frame, text="Reglages avances")
+        _settings_canvas, settings_inner = self._make_scrollable_frame(settings_frame)
+
+        # Exclusions
+        excl_frame = ttk.LabelFrame(settings_inner, text="Exclusions personnalisees", padding=10)
+        excl_frame.pack(fill="x", padx=10, pady=(10, 10))
+
+        ttk.Label(excl_frame, text="Extensions (separees par des virgules, ex: .tmp,.log)").grid(row=0, column=0, sticky="w")
+        self.excl_ext_var = tk.StringVar(value=", ".join(self.config_data["exclusions"].get("extensions", [])))
+        ttk.Entry(excl_frame, textvariable=self.excl_ext_var, width=40).grid(row=0, column=1, sticky="we", padx=5)
+
+        ttk.Label(excl_frame, text="Noms de fichiers exacts (separes par des virgules)").grid(row=1, column=0, sticky="w", pady=(4, 0))
+        self.excl_names_var = tk.StringVar(value=", ".join(self.config_data["exclusions"].get("filenames", [])))
+        ttk.Entry(excl_frame, textvariable=self.excl_names_var, width=40).grid(row=1, column=1, sticky="we", padx=5, pady=(4, 0))
+
+        ttk.Label(
+            excl_frame,
+            text="Motifs additionnels (glob, ex: *.bak) - s'ajoutent aux protections integrees (*.crdownload, *.part, *.tmp, desktop.ini, *.download), qui restent toujours actives",
+        ).grid(row=2, column=0, sticky="w", pady=(4, 0))
+        self.excl_patterns_var = tk.StringVar(value=", ".join(self.config_data["exclusions"].get("patterns", [])))
+        ttk.Entry(excl_frame, textvariable=self.excl_patterns_var, width=40).grid(row=2, column=1, sticky="we", padx=5, pady=(4, 0))
+
+        excl_frame.columnconfigure(1, weight=1)
+
+        # Categories personnalisees (au-dela des categories integrees :
+        # PDF, Images, Archives, Installateurs, Videos, Audio - celles-ci
+        # gardent leur comportement integre - dont, pour les quatre
+        # premieres, la detection par signature de fichier - et ne sont
+        # pas modifiables ici)
+        cat_frame = ttk.LabelFrame(settings_inner, text="Categories personnalisees", padding=10)
+        cat_frame.pack(fill="x", padx=10, pady=(0, 10))
+
+        self.custom_categories = copy.deepcopy(self.config_data.get("custom_categories", []))
+
+        cat_columns = ("name", "extensions", "patterns", "target")
+        self.categories_tree = ttk.Treeview(cat_frame, columns=cat_columns, show="headings", height=4)
+        for col, label, width in [
+            ("name", "Nom", 120), ("extensions", "Extensions", 160),
+            ("patterns", "Motifs de nom", 160), ("target", "Dossier cible", 180),
+        ]:
+            self.categories_tree.heading(col, text=label)
+            self.categories_tree.column(col, width=width, anchor="w")
+        self.categories_tree.grid(row=0, column=0, columnspan=4, sticky="we", pady=(0, 6))
+        self._refresh_categories_tree()
+
+        ttk.Label(cat_frame, text="Nom").grid(row=1, column=0, sticky="w")
+        self.new_category_name_var = tk.StringVar()
+        ttk.Entry(cat_frame, textvariable=self.new_category_name_var, width=16).grid(row=2, column=0, sticky="we", padx=(0, 5))
+        ttk.Label(cat_frame, text="Extensions (ex: .mp3,.flac)").grid(row=1, column=1, sticky="w")
+        self.new_category_ext_var = tk.StringVar()
+        ttk.Entry(cat_frame, textvariable=self.new_category_ext_var, width=20).grid(row=2, column=1, sticky="we", padx=5)
+        ttk.Label(cat_frame, text="Motifs de nom (optionnel, ex: facture*.pdf)").grid(row=1, column=2, sticky="w")
+        self.new_category_patterns_var = tk.StringVar()
+        ttk.Entry(cat_frame, textvariable=self.new_category_patterns_var, width=20).grid(row=2, column=2, sticky="we", padx=5)
+        ttk.Label(cat_frame, text="Dossier cible (relatif a la destination racine)").grid(row=1, column=3, sticky="w")
+        self.new_category_target_var = tk.StringVar()
+        ttk.Entry(cat_frame, textvariable=self.new_category_target_var, width=18).grid(row=2, column=3, sticky="we", padx=5)
+        ttk.Button(cat_frame, text="Ajouter", command=self._add_custom_category).grid(row=2, column=4, sticky="w", padx=(5, 0))
+        ttk.Button(cat_frame, text="Supprimer la categorie selectionnee", command=self._remove_custom_category).grid(
+            row=3, column=0, columnspan=5, sticky="w", pady=(6, 0)
+        )
+        ttk.Label(
+            cat_frame,
+            text="Un motif de nom (ex: facture*.pdf, Capture*.png) est prioritaire sur l'extension, "
+            "y compris celle d'une categorie integree - laissez vide pour un tri par extension seule.",
+            foreground="#666",
+        ).grid(row=4, column=0, columnspan=5, sticky="w", pady=(4, 0))
+        cat_frame.columnconfigure(1, weight=1)
+        cat_frame.columnconfigure(2, weight=1)
+        cat_frame.columnconfigure(3, weight=1)
+
+        # Mode Veille (surveillance optionnelle)
+        watch_frame = ttk.LabelFrame(settings_inner, text="Mode Veille (optionnel)", padding=10)
+        watch_frame.pack(fill="x", padx=10, pady=(0, 10))
+
+        ttk.Label(watch_frame, text="Verifier le dossier toutes les").grid(row=0, column=0, sticky="w")
+        self.watch_interval_var = tk.StringVar(
+            value=str(self.config_data.get("watch_interval_seconds", DEFAULT_WATCH_INTERVAL_SECONDS))
+        )
+        ttk.Spinbox(watch_frame, from_=5, to=3600, textvariable=self.watch_interval_var, width=6).grid(
+            row=0, column=1, sticky="w", padx=5
+        )
+        ttk.Label(watch_frame, text="secondes").grid(row=0, column=2, sticky="w")
+        self.watch_btn = ttk.Button(watch_frame, text="Activer la veille", command=self._toggle_watch)
+        self.watch_btn.grid(row=0, column=3, sticky="w", padx=(20, 0))
+        self.watch_status_var = tk.StringVar(value="Veille inactive.")
+        ttk.Label(watch_frame, textvariable=self.watch_status_var, foreground="#555").grid(
+            row=1, column=0, columnspan=4, sticky="w", pady=(4, 0)
+        )
+        ttk.Label(
+            watch_frame,
+            text=(
+                "La veille surveille le dossier en arriere-plan mais ne deplace jamais rien "
+                "automatiquement : une confirmation groupee vous est toujours demandee des que "
+                "de nouveaux fichiers sont detectes et stables (plus aucun telechargement en cours)."
+            ),
+            wraplength=760,
+            foreground="#555",
+        ).grid(row=2, column=0, columnspan=4, sticky="w", pady=(2, 0))
+
+        # L'apercu reste l'onglet actif par defaut a l'ouverture (deja le cas
+        # de fait puisque c'est le premier onglet ajoute, mais explicite ici
+        # pour rester correct meme si l'ordre d'ajout des onglets change un
+        # jour) : c'est l'ecran le plus important, celui qui doit rester
+        # prioritaire (correctif audit D1).
+        notebook.select(preview_frame)
 
         self._update_check_queue = queue.Queue()
         update_checker.start_update_check(APP_VERSION, UPDATE_REPO, self._update_check_queue)
@@ -1142,23 +1318,50 @@ class OrganizerGUI(tk.Tk):
         dialog.title(f"Detail du lot - {batch.get('timestamp', '')}")
         dialog.transient(self)
         dialog.grab_set()
-        dialog.geometry("820x420")
+        # Correctif audit D4 : les 6 colonnes declarees ci-dessous totalisent
+        # 940px, qui, avec la scrollbar verticale (~20px) et les marges du
+        # Treeview (padx=10 de chaque cote), depassaient largement les 820px
+        # de la geometrie d'origine - la colonne "Erreur" (la plus a droite,
+        # celle qui explique POURQUOI un deplacement a echoue) n'etait alors
+        # pas du tout visible sans redimensionnement manuel. minsize evite
+        # aussi qu'un redimensionnement involontaire ne fasse redisparaitre
+        # ces colonnes.
+        dialog.geometry("1000x460")
+        dialog.minsize(1000, 320)
+
+        tree_frame = ttk.Frame(dialog)
+        tree_frame.pack(fill="both", expand=True, padx=10, pady=(10, 5))
+        tree_frame.rowconfigure(0, weight=1)
+        tree_frame.columnconfigure(0, weight=1)
 
         columns = ("fichier", "categorie", "destination", "raison", "statut", "erreur")
-        tree = ttk.Treeview(dialog, columns=columns, show="headings", height=15)
+        tree = ttk.Treeview(tree_frame, columns=columns, show="headings", height=15)
         for col, label, width in [
             ("fichier", "Fichier", 140),
-            ("categorie", "Categorie", 100),
+            ("categorie", "Categorie", 90),
             ("destination", "Destination", 260),
-            ("raison", "Raison", 180),
+            ("raison", "Raison", 220),
             ("statut", "Statut", 90),
-            ("erreur", "Erreur", 100),
+            ("erreur", "Erreur", 140),
         ]:
             tree.heading(col, text=label)
             tree.column(col, width=width, anchor="w")
-        tree.pack(fill="both", expand=True, padx=10, pady=(10, 5))
-        scroll = ttk.Scrollbar(dialog, orient="vertical", command=tree.yview)
-        tree.configure(yscrollcommand=scroll.set)
+        tree.grid(row=0, column=0, sticky="nsew")
+        vscroll = ttk.Scrollbar(tree_frame, orient="vertical", command=tree.yview)
+        vscroll.grid(row=0, column=1, sticky="ns")
+        # Scrollbar horizontale (correctif audit D4, filet de securite en
+        # plus de l'elargissement du dialogue ci-dessus) : si une future
+        # colonne/un futur libelle plus long faisait a nouveau deborder le
+        # total des largeurs, l'utilisateur pourrait toujours acceder au
+        # contenu masque plutot que de le perdre silencieusement.
+        hscroll = ttk.Scrollbar(tree_frame, orient="horizontal", command=tree.xview)
+        hscroll.grid(row=1, column=0, sticky="ew")
+        tree.configure(yscrollcommand=vscroll.set, xscrollcommand=hscroll.set)
+        # Infobulles (correctif audit D2/D4) : "Raison" et "Erreur" peuvent
+        # toutes deux contenir un message plus long que leur colonne, meme
+        # apres l'elargissement ci-dessus (ex: un message [WinError ...]
+        # detaille).
+        self._batch_detail_tooltip = _TreeviewCellTooltip(tree, ["raison", "erreur"])
 
         for move in batch["moves"]:
             status_label = BATCH_STATUS_LABELS.get(move.get("status"), move.get("status", ""))
