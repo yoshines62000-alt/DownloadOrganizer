@@ -8,6 +8,7 @@ import io
 import json
 import os
 import queue
+import sys
 import threading
 import time
 import tkinter as tk
@@ -19,6 +20,48 @@ DONATE_URL = "https://ko-fi.com/yoshines62000"
 APP_VERSION = "1.0.15"
 UPDATE_REPO = "yoshines62000-alt/DownloadOrganizer"
 RELEASES_URL = f"https://github.com/{UPDATE_REPO}/releases/latest"
+
+# Identifiant unique de l'application aupres de Windows (audit D8/E1) : sans
+# lui, l'exe (non signe, sans metadonnees d'editeur) se retrouve regroupe
+# dans la barre des taches/l'epinglage sous une icone/processus generique
+# Python plutot que sous sa propre icone dediee. Doit etre defini AVANT la
+# creation de toute fenetre (voir _set_app_user_model_id, appele en tout
+# debut de OrganizerGUI.__init__).
+APP_USER_MODEL_ID = "Yoshines.NettoyeurTelechargements.GUI.1"
+
+
+def _set_app_user_model_id() -> None:
+    """Windows uniquement (audit D8/E1) : associe ce processus a un
+    identifiant applicatif dedie plutot que l'identifiant generique de
+    l'interpreteur Python qui l'execute (pythonw.exe/python.exe) - permet a
+    Windows de regrouper correctement les fenetres de l'application dans la
+    barre des taches et d'afficher son ICONE PROPRE (celle posee via
+    iconbitmap/le .spec PyInstaller, voir _resolve_icon_path) plutot que
+    l'icone Python generique, y compris quand l'app est epinglee. Echoue
+    silencieusement sur toute plateforme/environnement ou l'appel n'est pas
+    disponible (non-Windows, ctypes indisponible...) : purement cosmetique,
+    ne doit jamais empecher l'application de demarrer."""
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_USER_MODEL_ID)
+    except (OSError, AttributeError, ValueError):
+        pass
+
+
+def _resolve_icon_path() -> "Path | None":
+    """Chemin de assets/icon.ico, en tenant compte du mode "gele" PyInstaller
+    (audit D8/E1) : une fois empaquete en onefile, les fichiers listes dans
+    `datas` (voir NettoyeurTelechargements.spec) sont extraits a l'execution
+    dans un dossier temporaire expose via `sys._MEIPASS` - un chemin relatif
+    au script source (utilise quand on lance gui.py directement depuis le
+    depot) ne pointerait vers rien de valide dans l'exe gele. Renvoie None
+    (plutot que de lever) si le fichier est introuvable dans les deux cas :
+    l'absence d'icone ne doit jamais empecher le demarrage de l'application."""
+    base_dir = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+    icon_path = base_dir / "assets" / "icon.ico"
+    return icon_path if icon_path.is_file() else None
 
 import update_checker
 from organizer import (
@@ -144,8 +187,12 @@ class _TreeviewCellTooltip:
 
 class OrganizerGUI(tk.Tk):
     def __init__(self):
+        # Avant toute creation de fenetre (audit D8/E1) : voir la docstring
+        # de _set_app_user_model_id pour la raison de cet ordre.
+        _set_app_user_model_id()
         super().__init__()
         self.title("Nettoyeur intelligent - Telechargements")
+        self._apply_window_icon()
         # Taille par defaut mesuree empiriquement pour que les boutons
         # d'action, au moins un onglet (Apercu/Historique) et la barre de
         # statut soient visibles des le premier lancement sur un ecran
@@ -207,6 +254,20 @@ class OrganizerGUI(tk.Tk):
         # permet a _on_close de l'annuler proprement quel que soit l'etat
         # d'avancement (delai initial ou polling en cours).
         self._stale_review_after_id = self.after(200, self._check_stale_review_folders)
+
+    def _apply_window_icon(self) -> None:
+        """Icone de fenetre (audit D8/E1) : `app.wm_iconbitmap()` renvoyait
+        auparavant une chaine vide (icone Tk generique par defaut, "plume").
+        Purement cosmetique : un echec ici (icone manquante, format non
+        supporte...) ne doit jamais empecher la fenetre de s'ouvrir - d'ou le
+        `try/except tk.TclError` autour de l'appel."""
+        icon_path = _resolve_icon_path()
+        if icon_path is None:
+            return
+        try:
+            self.iconbitmap(default=str(icon_path))
+        except tk.TclError:
+            pass
 
     # ------------------------------------------------------------------
     # Construction de l'UI
@@ -284,11 +345,21 @@ class OrganizerGUI(tk.Tk):
         btn_frame_2.pack(fill="x")
 
         ttk.Button(btn_frame_1, text="Enregistrer la configuration (Ctrl+S)", command=self._save_config).pack(side="left")
-        self.simulate_btn = ttk.Button(btn_frame_1, text="Simuler (F5)", command=self._simulate)
+        # underline=0 (audit D6) : mnemonique clavier standard Windows
+        # (Alt+lettre souligne, sans avoir a passer par la souris) sur les
+        # trois boutons d'action les plus importants - voir _bind_shortcuts
+        # pour les liaisons Alt+S/Alt+R/Alt+A correspondantes. L'application
+        # n'ayant pas de barre de menu, ces trois lettres sont libres de
+        # tout conflit.
+        self.simulate_btn = ttk.Button(btn_frame_1, text="Simuler (F5)", command=self._simulate, underline=0)
         self.simulate_btn.pack(side="left", padx=6)
-        self.run_btn = ttk.Button(btn_frame_1, text="Ranger les fichiers (Ctrl+Entree)", command=self._run_real)
+        self.run_btn = ttk.Button(
+            btn_frame_1, text="Ranger les fichiers (Ctrl+Entree)", command=self._run_real, underline=0
+        )
         self.run_btn.pack(side="left")
-        ttk.Button(btn_frame_1, text="Annuler le dernier rangement (Ctrl+Z)", command=self._undo).pack(side="left", padx=6)
+        ttk.Button(
+            btn_frame_1, text="Annuler le dernier rangement (Ctrl+Z)", command=self._undo, underline=0,
+        ).pack(side="left", padx=6)
         ttk.Button(btn_frame_1, text="Annulation selective...", command=self._selective_undo_dialog).pack(side="left")
 
         ttk.Button(btn_frame_2, text="Ouvrir le dossier de destination", command=self._open_target_dir).pack(side="left")
@@ -337,6 +408,14 @@ class OrganizerGUI(tk.Tk):
         # Notebook depassait a lui seul la hauteur minimale de la fenetre).
         notebook = ttk.Notebook(self)
         notebook.pack(fill="both", expand=True, padx=10, pady=10)
+        # Conserve en attribut d'instance (audit K3) : sans cela, il etait
+        # impossible d'acceder au Notebook (ex: changer d'onglet
+        # programmatiquement) depuis l'exterieur de _build_widgets sans
+        # parcourir manuellement l'arbre de widgets (winfo_children()
+        # recursif) - reduit la testabilite et empeche de futures
+        # fonctionnalites simples comme basculer automatiquement vers
+        # l'onglet Historique apres un rangement reel.
+        self.notebook = notebook
 
         preview_frame = ttk.Frame(notebook)
         notebook.add(preview_frame, text="Apercu")
@@ -419,7 +498,8 @@ class OrganizerGUI(tk.Tk):
 
         ttk.Label(
             excl_frame,
-            text="Motifs additionnels (glob, ex: *.bak) - s'ajoutent aux protections integrees (*.crdownload, *.part, *.tmp, desktop.ini, *.download), qui restent toujours actives",
+            text="Motifs additionnels (glob, ex: *.bak) - s'ajoutent aux protections integrees (*.crdownload, "
+            "*.part, *.tmp, desktop.ini, *.download, *.opdownload, *.!ut, *.!qb, *.lnk), qui restent toujours actives",
         ).grid(row=2, column=0, sticky="w", pady=(4, 0))
         self.excl_patterns_var = tk.StringVar(value=", ".join(self.config_data["exclusions"].get("patterns", [])))
         ttk.Entry(excl_frame, textvariable=self.excl_patterns_var, width=40).grid(row=2, column=1, sticky="we", padx=5, pady=(4, 0))
@@ -502,6 +582,30 @@ class OrganizerGUI(tk.Tk):
             foreground="#555",
         ).grid(row=2, column=0, columnspan=4, sticky="w", pady=(2, 0))
 
+        # Mises a jour (audit F2) : l'appel reseau de verification (requete
+        # HTTPS GET anonyme vers l'API GitHub, voir update_checker.py)
+        # n'etait ni documente ni desactivable - cette case a cocher permet
+        # de l'opter-out pour un usage strictement hors-ligne/air-gapped, en
+        # plus de la mention explicite dans le README.
+        update_frame = ttk.LabelFrame(settings_inner, text="Mises a jour", padding=10)
+        update_frame.pack(fill="x", padx=10, pady=(0, 10))
+        self.check_updates_var = tk.BooleanVar(value=bool(self.config_data.get("check_for_updates", True)))
+        ttk.Checkbutton(
+            update_frame,
+            text="Verifier les mises a jour au demarrage",
+            variable=self.check_updates_var,
+        ).grid(row=0, column=0, sticky="w")
+        ttk.Label(
+            update_frame,
+            text=(
+                "Effectue une requete anonyme (aucune donnee personnelle) vers l'API GitHub publique "
+                "pour savoir si une nouvelle version est disponible. Decochez pour un usage strictement "
+                "hors ligne - le reste de l'application fonctionne entierement sans connexion Internet."
+            ),
+            wraplength=760,
+            foreground="#555",
+        ).grid(row=1, column=0, sticky="w", pady=(2, 0))
+
         # L'apercu reste l'onglet actif par defaut a l'ouverture (deja le cas
         # de fait puisque c'est le premier onglet ajoute, mais explicite ici
         # pour rester correct meme si l'ordre d'ajout des onglets change un
@@ -510,8 +614,11 @@ class OrganizerGUI(tk.Tk):
         notebook.select(preview_frame)
 
         self._update_check_queue = queue.Queue()
-        update_checker.start_update_check(APP_VERSION, UPDATE_REPO, self._update_check_queue)
-        self._update_check_after_id = self.after(500, self._poll_update_check)
+        if self.config_data.get("check_for_updates", True):
+            update_checker.start_update_check(APP_VERSION, UPDATE_REPO, self._update_check_queue)
+            self._update_check_after_id = self.after(500, self._poll_update_check)
+        else:
+            self.update_status_var.set("Verification desactivee (Reglages avances)")
 
     def _poll_update_check(self):
         try:
@@ -534,7 +641,10 @@ class OrganizerGUI(tk.Tk):
     # Actions
     # ------------------------------------------------------------------
 
-    def _run_worker(self, work, on_success, on_error=None, poll_interval_ms=100, track_after_id=None):
+    def _run_worker(
+        self, work, on_success, on_error=None, poll_interval_ms=100, track_after_id=None,
+        progress_queue: "Optional[queue.Queue]" = None, on_progress=None,
+    ):
         """Execute `work` (callable sans argument) sur un thread separe, puis
         rappelle on_success(resultat) - ou on_error(exception) si `work` a
         leve - sur le thread PRINCIPAL Tk, via self.after(). Meme pattern
@@ -559,7 +669,19 @@ class OrganizerGUI(tk.Tk):
         traite) : cela permet a l'appelant de stocker cet id dans son
         propre attribut (ex: self._action_after_id, self._watch_after_id)
         afin de pouvoir l'annuler proprement depuis _on_close si la fenetre
-        est fermee pendant que le traitement tourne encore."""
+        est fermee pendant que le traitement tourne encore.
+
+        `progress_queue`/`on_progress` (correctif audit B2) : si les deux
+        sont fournis, chaque tuple depose dans `progress_queue` par `work`
+        (execute sur le thread de fond - voir DownloadOrganizer.plan()/
+        execute(progress_callback=...)) est relaye a `on_progress(*tuple)`
+        sur le thread PRINCIPAL, a chaque tick de polling. Seul le DERNIER
+        tuple depose depuis le tick precedent est relaye (la queue est
+        entierement videe a chaque poll) : sur un tres gros lot, `work` peut
+        deposer une progression bien plus vite que le polling ne la
+        consomme - inutile d'empiler puis de rejouer chaque valeur
+        intermediaire, seul l'etat le plus recent importe pour un simple
+        indicateur visuel."""
         result_queue: "queue.Queue" = queue.Queue()
 
         def worker():
@@ -576,6 +698,15 @@ class OrganizerGUI(tk.Tk):
         threading.Thread(target=worker, daemon=True).start()
 
         def poll():
+            if progress_queue is not None and on_progress is not None:
+                latest = None
+                try:
+                    while True:
+                        latest = progress_queue.get_nowait()
+                except queue.Empty:
+                    pass
+                if latest is not None:
+                    on_progress(*latest)
             try:
                 status, payload = result_queue.get_nowait()
             except queue.Empty:
@@ -665,6 +796,7 @@ class OrganizerGUI(tk.Tk):
             "patterns": split_csv(self.excl_patterns_var.get()),
         }
         self.config_data["custom_categories"] = copy.deepcopy(self.custom_categories)
+        self.config_data["check_for_updates"] = bool(self.check_updates_var.get())
         return self.config_data
 
     def _save_config(self):
@@ -686,6 +818,7 @@ class OrganizerGUI(tk.Tk):
         self.watch_interval_var.set(str(config.get("watch_interval_seconds", DEFAULT_WATCH_INTERVAL_SECONDS)))
         self.custom_categories = copy.deepcopy(config.get("custom_categories", []))
         self._refresh_categories_tree()
+        self.check_updates_var.set(bool(config.get("check_for_updates", True)))
         self.config_data = config
         self.organizer = DownloadOrganizer(config)
 
@@ -810,11 +943,27 @@ class OrganizerGUI(tk.Tk):
 
         self._set_busy(True, "Simulation en cours...")
 
+        # Indicateur de progression (audit B2) : sans lui, rien ne
+        # distinguait a l'ecran un traitement long en cours d'un blocage
+        # reel - seuls les boutons desactives le laissaient supposer. Le
+        # thread de fond depose ("Analyse"/"Simulation du rangement", fait,
+        # total) dans cette queue au fil de plan()/execute() ; le thread
+        # principal (voir _run_worker) la relaie dans la barre de statut.
+        progress_queue: "queue.Queue" = queue.Queue()
+
         def work():
-            result = preview_organizer.plan()
+            result = preview_organizer.plan(
+                progress_callback=lambda done, total: progress_queue.put(("Analyse", done, total))
+            )
             if not result.errors:
-                preview_organizer.execute(result, simulate=True)
+                preview_organizer.execute(
+                    result, simulate=True,
+                    progress_callback=lambda done, total: progress_queue.put(("Simulation du rangement", done, total)),
+                )
             return result
+
+        def on_progress(label, done, total):
+            self.status_var.set(f"{label} en cours... ({done}/{total} fichier(s) traite(s))")
 
         def on_success(result):
             self._set_busy(False)
@@ -837,6 +986,7 @@ class OrganizerGUI(tk.Tk):
         self._run_worker(
             work, on_success, on_error,
             track_after_id=lambda after_id: setattr(self, "_action_after_id", after_id),
+            progress_queue=progress_queue, on_progress=on_progress,
         )
 
     def _run_real(self):
@@ -866,8 +1016,19 @@ class OrganizerGUI(tk.Tk):
 
         self._set_busy(True, "Analyse en cours...")
 
+        # Indicateur de progression (audit B2), meme principe que _simulate :
+        # une queue distincte par phase (analyse, puis rangement une fois
+        # confirme), chacune relayee via son propre on_progress dans la
+        # barre de statut.
+        plan_progress_queue: "queue.Queue" = queue.Queue()
+
         def plan_work():
-            return worker_organizer.plan()
+            return worker_organizer.plan(
+                progress_callback=lambda done, total: plan_progress_queue.put((done, total))
+            )
+
+        def on_plan_progress(done, total):
+            self.status_var.set(f"Analyse en cours... ({done}/{total} fichier(s) traite(s))")
 
         def on_plan_success(result):
             self._set_busy(False)
@@ -899,8 +1060,16 @@ class OrganizerGUI(tk.Tk):
 
             self._set_busy(True, "Rangement en cours...")
 
+            execute_progress_queue: "queue.Queue" = queue.Queue()
+
             def execute_work():
-                return worker_organizer.execute(result, simulate=False)
+                return worker_organizer.execute(
+                    result, simulate=False,
+                    progress_callback=lambda done, total: execute_progress_queue.put((done, total)),
+                )
+
+            def on_execute_progress(done, total):
+                self.status_var.set(f"Rangement en cours... ({done}/{total} fichier(s) traite(s))")
 
             def on_execute_success(batch):
                 self._set_busy(False)
@@ -931,6 +1100,7 @@ class OrganizerGUI(tk.Tk):
             self._run_worker(
                 execute_work, on_execute_success, on_execute_error,
                 track_after_id=lambda after_id: setattr(self, "_action_after_id", after_id),
+                progress_queue=execute_progress_queue, on_progress=on_execute_progress,
             )
 
         def on_plan_error(exc):
@@ -940,6 +1110,7 @@ class OrganizerGUI(tk.Tk):
         self._run_worker(
             plan_work, on_plan_success, on_plan_error,
             track_after_id=lambda after_id: setattr(self, "_action_after_id", after_id),
+            progress_queue=plan_progress_queue, on_progress=on_plan_progress,
         )
 
     def _open_target_dir(self):
@@ -1554,6 +1725,15 @@ class OrganizerGUI(tk.Tk):
         self.bind_all("<F5>", lambda e: self._simulate())
         self.bind_all("<Control-Return>", lambda e: self._run_real())
         self.bind_all("<Control-z>", lambda e: self._undo())
+        # Mnemoniques clavier Alt+lettre (audit D6), en complement des
+        # raccourcis globaux ci-dessus - voir underline=0 sur les boutons
+        # correspondants dans _build_widgets. Tk ne convertit pas de
+        # lui-meme underline= en une liaison clavier active (contrairement a
+        # une entree de menu) : sans ce bind explicite, la lettre soulignee
+        # ne serait qu'un indice visuel non fonctionnel.
+        self.bind_all("<Alt-s>", lambda e: self._simulate())
+        self.bind_all("<Alt-r>", lambda e: self._run_real())
+        self.bind_all("<Alt-a>", lambda e: self._undo())
 
 
 def run_gui():

@@ -1,0 +1,14 @@
+# Dependance de BUILD uniquement (audit E5) : necessaire pour regenerer
+# l'executable (.exe) via PyInstaller, jamais pour executer l'application
+# elle-meme (organizer.py/gui.py n'importent que la bibliotheque standard
+# Python, voir README - "Zero dependance tierce en execution").
+#
+# Version figee plutot qu'un simple "pip install pyinstaller" sans
+# contrainte : deux builds de la meme version de code a des dates
+# differentes pourraient sinon produire des binaires legerement differents
+# (bootloader PyInstaller different), ce qui complique le diagnostic d'un
+# bug specifique au packaging signale par un utilisateur.
+#
+# Installation :
+#   python -m pip install -r requirements-build.txt
+pyinstaller==6.21.0

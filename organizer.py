@@ -23,6 +23,7 @@ import fnmatch
 import hashlib
 import json
 import logging
+import logging.handlers
 import os
 import shutil
 import sys
@@ -31,7 +32,7 @@ import time
 from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path, PurePath
-from typing import Optional
+from typing import Callable, Optional
 
 
 # ---------------------------------------------------------------------------
@@ -46,11 +47,24 @@ LOG_FILE = APP_DIR / "app.log"
 logger = logging.getLogger("download_organizer")
 
 
+# Plafond de taille (audit L1) : sans rotation, app.log grossissait
+# indefiniment sur un usage "quotidien sur plusieurs annees" (objectif
+# explicitement vise par le design de l'historique). En usage normal, le
+# volume reel de journalisation est tres faible (seuls warning/error sont
+# journalises, jamais les operations routinieres reussies) - ce plafond ne
+# sert donc de garde-fou que dans le cas d'erreurs recurrentes (ex: Mode
+# Veille laisse actif contre un fichier verrouille en permanence).
+LOG_MAX_BYTES = 1_000_000
+LOG_BACKUP_COUNT = 2
+
+
 def _ensure_logging_configured() -> None:
     if logger.handlers:
         return
     APP_DIR.mkdir(parents=True, exist_ok=True)
-    handler = logging.FileHandler(LOG_FILE, encoding="utf-8")
+    handler = logging.handlers.RotatingFileHandler(
+        LOG_FILE, maxBytes=LOG_MAX_BYTES, backupCount=LOG_BACKUP_COUNT, encoding="utf-8"
+    )
     handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
     logger.addHandler(handler)
     logger.setLevel(logging.INFO)
@@ -111,7 +125,21 @@ PARTIAL_HASH_SAMPLE_SIZE = 64 * 1024
 # Motifs toujours exclus, independamment de la configuration utilisateur.
 # Non modifiables depuis la GUI : evite qu'un champ "Motifs" vide par megarde
 # ne desactive la protection de fichiers systeme/temporaires.
-ALWAYS_EXCLUDED_PATTERNS = ["*.crdownload", "*.part", "*.tmp", "desktop.ini", "*.download"]
+#
+# *.opdownload (Opera), *.!ut et *.!qb (clients torrent uTorrent/qBittorrent) :
+# memes fichiers "telechargement en cours" que *.crdownload/*.part/*.download,
+# juste pour d'autres logiciels (audit A8, lacune mineure notee au backlog).
+#
+# *.lnk (raccourcis Windows) : un raccourci peut utiliser un chemin relatif a
+# son propre dossier (rare, mais existe pour certains installateurs
+# portables) - le deplacer silencieusement une fois ancien (comme n'importe
+# quel "fichier de type non reconnu") pourrait le casser sans avertissement
+# specifique (audit A9). Le fichier .lnk lui-meme reste minuscule (quelques
+# Ko) : l'exclure inconditionnellement est plus sur que de le ranger.
+ALWAYS_EXCLUDED_PATTERNS = [
+    "*.crdownload", "*.part", "*.tmp", "desktop.ini", "*.download",
+    "*.opdownload", "*.!ut", "*.!qb", "*.lnk",
+]
 
 # ---------------------------------------------------------------------------
 # Reconnaissance par signature de fichier (magic bytes)
@@ -199,6 +227,12 @@ DEFAULT_CONFIG = {
     # Categories additionnelles definies par l'utilisateur (voir
     # get_effective_categories) : [{"name": str, "extensions": [str], "target": str}, ...]
     "custom_categories": [],
+    # Verification de mise a jour au demarrage (requete HTTPS anonyme vers
+    # l'API GitHub publique, aucune donnee personnelle envoyee - voir
+    # update_checker.py) : activee par defaut, mais documentee et
+    # desactivable depuis l'onglet "Reglages avances" de la GUI pour un usage
+    # strictement hors-ligne/air-gapped (audit F2).
+    "check_for_updates": True,
 }
 
 
@@ -228,6 +262,53 @@ def _atomic_write_text(path: Path, text: str) -> None:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(text)
         os.replace(tmp_name, path)
+    except Exception:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
+
+
+def _copy_via_temp_file(source: str, destination: str) -> None:
+    """`copy_function` personnalise transmis a `shutil.move` (audit A10).
+
+    `shutil.move` n'appelle `copy_function` QUE lorsque le renommage rapide
+    (`os.rename`, atomique et quasi instantane) echoue - concretement,
+    uniquement pour un deplacement INTER-VOLUME (disque externe, NAS/lecteur
+    reseau distinct du dossier Telechargements) : le cas courant "meme
+    disque" (configuration par defaut) reste un simple `os.rename`, jamais
+    affecte par cette fonction.
+
+    Par defaut, `shutil.move` copierait directement vers le nom de
+    destination FINAL (`shutil.copy2`) puis supprimerait la source. Un arret
+    brutal du processus (fin de tache forcee, coupure de courant, BSOD -
+    pas une simple erreur `OSError` propre, deja geree ailleurs par le
+    `except OSError` d'`execute()`) survenant PENDANT cette copie laisserait
+    alors un fichier TRONQUE visible sous le nom final attendu par
+    l'utilisateur, sans rien qui le distingue visuellement d'un fichier
+    complet.
+
+    Ici, la copie est d'abord ecrite sous un nom TEMPORAIRE cache dans le
+    MEME dossier que la destination finale, puis renommee atomiquement
+    (`os.replace`, toujours sur le meme volume a ce stade) vers le nom final
+    UNE FOIS la copie confirmee complete. Un arret brutal pendant la copie
+    laisse alors, au pire, un fichier temporaire orphelin (suffixe
+    `.partial-*`), jamais un fichier tronque sous le nom final - la source
+    originale, elle, reste intacte tant que ce renommage final n'a pas eu
+    lieu (supprimee seulement par `shutil.move` lui-meme, apres le retour de
+    cette fonction)."""
+    destination_path = Path(destination)
+    destination_path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(
+        dir=str(destination_path.parent),
+        prefix=destination_path.stem + ".",
+        suffix=".partial",
+    )
+    os.close(fd)
+    try:
+        shutil.copy2(source, tmp_name)
+        os.replace(tmp_name, destination)
     except Exception:
         try:
             os.unlink(tmp_name)
@@ -350,6 +431,11 @@ def _merge_config_data(data: dict) -> dict:
         merged["exclusions"].update(data["exclusions"])
     if _is_valid_custom_categories(data.get("custom_categories")):
         merged["custom_categories"] = data["custom_categories"]
+    # Champ booleen : traite a part de la boucle numerique/chaine ci-dessus
+    # (qui exclut deliberement bool pour proteger old_file_threshold_days/
+    # watch_interval_seconds d'une corruption "true"/"false").
+    if isinstance(data.get("check_for_updates"), bool):
+        merged["check_for_updates"] = data["check_for_updates"]
     return merged
 
 
@@ -924,7 +1010,14 @@ class DownloadOrganizer:
 
     # -- planification -------------------------------------------------
 
-    def plan(self) -> OrganizeResult:
+    def plan(self, progress_callback: Optional[Callable[[int, int], None]] = None) -> OrganizeResult:
+        """`progress_callback(traites, total)`, si fourni, est appele apres
+        l'examen de chaque entree du dossier (correctif audit B2 : sur un
+        gros volume/un lecteur reseau lent, rien ne distinguait auparavant a
+        l'ecran un traitement long en cours d'un blocage reel). Jamais
+        appele depuis un thread different de celui qui invoque plan() -
+        c'est a l'appelant (voir gui.py) de faire remonter cette valeur au
+        thread principal Tk s'il execute plan() en arriere-plan."""
         downloads_dir_str = self.config["downloads_dir"].strip() if self.config["downloads_dir"] else ""
         base_target_str = self.config["base_target_dir"].strip() if self.config["base_target_dir"] else ""
         result = OrganizeResult()
@@ -1000,7 +1093,15 @@ class DownloadOrganizer:
             result.errors.append((downloads_dir, f"Impossible de lire le contenu du dossier : {exc}"))
             return result
 
-        for entry in entries:
+        total_entries = len(entries)
+        for index, entry in enumerate(entries, start=1):
+            # Appele en tout premier dans la boucle (avant les "continue" qui
+            # suivent) pour que la progression avance bien sur CHAQUE entree
+            # examinee, y compris les sous-dossiers/exclusions - pas
+            # seulement sur les fichiers effectivement candidats a un
+            # deplacement.
+            if progress_callback is not None:
+                progress_callback(index, total_entries)
             if entry.is_dir():
                 result.skipped_dirs.append(entry)
                 continue
@@ -1231,8 +1332,17 @@ class DownloadOrganizer:
             logger.error("Echec de la mise a jour incrementale de l'historique : %s", exc)
             return (offset, length)
 
-    def execute(self, result: OrganizeResult, simulate: bool = True) -> dict:
-        """Execute (ou simule) les deplacements planifies. Retourne le lot pour l'historique."""
+    def execute(
+        self,
+        result: OrganizeResult,
+        simulate: bool = True,
+        progress_callback: Optional[Callable[[int, int], None]] = None,
+    ) -> dict:
+        """Execute (ou simule) les deplacements planifies. Retourne le lot pour l'historique.
+
+        `progress_callback(traites, total)`, si fourni, est appele apres
+        chaque fichier traite (correctif audit B2 - meme principe que sur
+        plan(), voir sa docstring)."""
         batch = {
             "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
             "simulated": simulate,
@@ -1300,6 +1410,7 @@ class DownloadOrganizer:
             # du lot entier (des centaines de fichiers) comme avant ce
             # correctif.
             moves_processed = 0
+            total_moves = len(result.moves)
             for move in result.moves:
                 entry = {
                     "source": str(move.source),
@@ -1331,7 +1442,14 @@ class DownloadOrganizer:
                                 move.source, move.destination,
                             )
                         else:
-                            shutil.move(str(move.source), str(move.destination))
+                            # copy_function=_copy_via_temp_file (audit A10) :
+                            # shutil.move ne l'utilise que pour un
+                            # deplacement inter-volume (des que le
+                            # renommage rapide os.rename echoue) - voir la
+                            # docstring de _copy_via_temp_file pour le
+                            # detail du risque couvert (fichier tronque en
+                            # cas d'arret brutal pendant la copie).
+                            shutil.move(str(move.source), str(move.destination), copy_function=_copy_via_temp_file)
                             entry["status"] = "deplace"
                     except OSError as exc:
                         entry["status"] = "erreur"
@@ -1351,6 +1469,8 @@ class DownloadOrganizer:
                                 pass
                 batch["moves"].append(entry)
                 moves_processed += 1
+                if progress_callback is not None:
+                    progress_callback(moves_processed, total_moves)
                 # Checkpoint incremental : voir le commentaire au-dessus de la
                 # boucle pour la justification de HISTORY_CHECKPOINT_INTERVAL.
                 if not simulate and checkpoint is not None:

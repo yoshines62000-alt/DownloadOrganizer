@@ -111,6 +111,38 @@ class GuiTestCase(unittest.TestCase):
             self.assertIsNone(config)
             mocked_messagebox.showerror.assert_called_once()
 
+    # -- audit F2 : opt-out de la verification de mise a jour au demarrage --
+
+    def test_check_updates_enabled_by_default(self):
+        self.assertTrue(self.app.check_updates_var.get())
+        config = self.app._collect_config()
+        self.assertTrue(config["check_for_updates"])
+
+    def test_unchecking_check_updates_persists_the_opt_out(self):
+        self.app.check_updates_var.set(False)
+        with mock.patch.object(gui, "messagebox") as mocked_messagebox:
+            self.app._save_config()
+            mocked_messagebox.showerror.assert_not_called()
+
+        reloaded = org.load_config()
+        self.assertFalse(reloaded["check_for_updates"])
+
+    def test_start_update_check_is_skipped_when_disabled_in_config(self):
+        # Reconstruit une fenetre a partir d'une config existante ou l'opt-out
+        # est deja enregistre - simule un redemarrage de l'application apres
+        # avoir decoche la case au tour precedent.
+        cfg = org.load_config()
+        cfg["check_for_updates"] = False
+        org.save_config(cfg)
+
+        with mock.patch.object(gui.update_checker, "start_update_check") as mocked_start:
+            app2 = gui.OrganizerGUI()
+            try:
+                mocked_start.assert_not_called()
+                self.assertIn("desactivee", app2.update_status_var.get().lower())
+            finally:
+                app2._on_close()
+
     # -- item 4 : le scan des dossiers "A verifier"/"Doublons" ne bloque --
     # -- jamais le thread principal Tk (thread + queue.Queue + after) -----
 
@@ -556,6 +588,23 @@ class GuiTestCase(unittest.TestCase):
         self.assertIsNotNone(config)
         self.assertEqual(config["exclusions"]["extensions"], [".bak", ".old"])
 
+    # -- K3 : le Notebook Apercu/Historique est accessible en attribut ------
+
+    def test_notebook_is_stored_as_an_instance_attribute(self):
+        # Regression K3 (audit) : auparavant une simple variable locale de
+        # _build_widgets, self.notebook doit pointer vers le VRAI Notebook
+        # de la fenetre (celui qui contient les onglets Apercu/Historique/
+        # Reglages avances), accessible depuis l'exterieur sans avoir a
+        # parcourir manuellement l'arbre de widgets.
+        from tkinter import ttk
+        self.assertTrue(hasattr(self.app, "notebook"))
+        self.assertIsInstance(self.app.notebook, ttk.Notebook)
+        notebooks = [c for c in self.app.winfo_children() if isinstance(c, ttk.Notebook)]
+        self.assertEqual(len(notebooks), 1)
+        self.assertIs(self.app.notebook, notebooks[0])
+        tab_texts = [self.app.notebook.tab(t, "text") for t in self.app.notebook.tabs()]
+        self.assertEqual(tab_texts, ["Apercu", "Historique", "Reglages avances"])
+
     def test_window_at_minsize_keeps_result_notebook_visible(self):
         # Regression D3 (audit) : redimensionner la fenetre a sa taille
         # minimale declaree (minsize) faisait disparaitre ENTIEREMENT le
@@ -753,6 +802,63 @@ class GuiTestCase(unittest.TestCase):
                     w.destroy()
                 except Exception:
                     pass
+
+    # -- D8/E1 : icone de fenetre/executable + AppUserModelID --------------
+
+    def test_resolve_icon_path_finds_the_bundled_icon_when_running_from_source(self):
+        icon_path = gui._resolve_icon_path()
+        self.assertIsNotNone(icon_path, "assets/icon.ico introuvable en lancant depuis le code source")
+        self.assertTrue(icon_path.is_file())
+        self.assertEqual(icon_path.name, "icon.ico")
+
+    def test_resolve_icon_path_uses_meipass_when_frozen_by_pyinstaller(self):
+        # Simule le mode "gele" PyInstaller (onefile) : sys._MEIPASS pointe
+        # alors vers le dossier temporaire d'extraction - assets/icon.ico
+        # doit y etre cherche plutot qu'a cote du script source (audit D8/E1).
+        fake_meipass = self.tmp / "meipass_simule"
+        (fake_meipass / "assets").mkdir(parents=True)
+        (fake_meipass / "assets" / "icon.ico").write_bytes(b"\x00\x00\x01\x00")
+        sys_module = gui.sys
+        had_meipass = hasattr(sys_module, "_MEIPASS")
+        original = getattr(sys_module, "_MEIPASS", None)
+        sys_module._MEIPASS = str(fake_meipass)
+        try:
+            icon_path = gui._resolve_icon_path()
+        finally:
+            if had_meipass:
+                sys_module._MEIPASS = original
+            else:
+                del sys_module._MEIPASS
+        self.assertEqual(icon_path, fake_meipass / "assets" / "icon.ico")
+
+    def test_resolve_icon_path_returns_none_when_the_file_is_missing(self):
+        sys_module = gui.sys
+        fake_meipass = self.tmp / "meipass_sans_icone"
+        fake_meipass.mkdir()
+        had_meipass = hasattr(sys_module, "_MEIPASS")
+        original = getattr(sys_module, "_MEIPASS", None)
+        sys_module._MEIPASS = str(fake_meipass)
+        try:
+            icon_path = gui._resolve_icon_path()
+        finally:
+            if had_meipass:
+                sys_module._MEIPASS = original
+            else:
+                del sys_module._MEIPASS
+        self.assertIsNone(icon_path)
+
+    def test_set_app_user_model_id_does_not_raise(self):
+        gui._set_app_user_model_id()  # ne doit jamais lever, purement cosmetique
+
+    def test_apply_window_icon_does_not_raise_when_the_icon_cannot_be_resolved(self):
+        # Une icone introuvable/illisible ne doit jamais empecher la fenetre
+        # de s'ouvrir (correctif ecrit avec un try/except tk.TclError autour
+        # de self.iconbitmap - ce test verrouille le chemin "icone absente")
+        # ni de rester utilisable ensuite.
+        with mock.patch.object(gui, "_resolve_icon_path", return_value=None):
+            self.app._apply_window_icon()  # ne doit lever aucune exception
+        self.app.update()
+        self.assertTrue(self.app.winfo_exists())
 
 
 if __name__ == "__main__":

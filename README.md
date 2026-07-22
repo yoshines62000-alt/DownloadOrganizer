@@ -51,6 +51,30 @@ Comparez la valeur `Hash` affichée avec celle indiquée dans les notes de la
 Si les deux empreintes ne correspondent pas exactement, ne lancez pas le
 fichier et retéléchargez-le depuis la page officielle des releases.
 
+### Mon antivirus signale le fichier
+
+Il peut arriver qu'un antivirus (Windows Defender ou un éditeur tiers)
+signale `NettoyeurTelechargements.exe` comme suspect, même s'il n'y a rien
+de malveillant dedans. Deux raisons expliquent ce faux positif, bien connu
+pour ce type d'outil :
+
+- l'exécutable n'est **pas signé numériquement** (voir SmartScreen
+  ci-dessus) — les heuristiques antivirus se méfient davantage des binaires
+  non signés ;
+- l'outil **lit les premiers octets de nombreux fichiers et en déplace en
+  masse** en quelques secondes, un profil comportemental que des
+  heuristiques génériques associent parfois (à tort) à un rançongiciel.
+
+Le code source est intégralement public dans ce dépôt (voir [Lancer depuis
+le code source](#lancer-depuis-le-code-source) pour l'exécuter sans passer
+par l'exécutable), et [Vérifier l'intégrité du fichier
+téléchargé](#vérifier-lintégrité-du-fichier-téléchargé-optionnel) permet de
+confirmer que le fichier obtenu correspond bien à celui publié. Si vous
+voulez un second avis, vous pouvez soumettre le fichier à
+[VirusTotal](https://www.virustotal.com/) (plusieurs dizaines de moteurs
+antivirus) ou signaler le faux positif directement à l'éditeur de votre
+antivirus.
+
 ## Fonctionnalités
 
 - **Mode Veille (optionnel)** : surveille le dossier Téléchargements en
@@ -87,13 +111,32 @@ fichier et retéléchargez-le depuis la page officielle des releases.
   `~/.download_organizer/history.jsonl` (format JSONL — une ligne JSON par
   lot). Un ancien fichier `history.json` est migré automatiquement et de
   façon transparente vers ce nouveau format au premier lancement.
-- **Bouton Annuler** : restaure le dernier lot de déplacements réels vers son
-  emplacement d'origine.
+- **Annulation, à trois niveaux de granularité** :
+  - **Annuler le dernier rangement** : restaure en un clic tous les fichiers
+    du dernier lot réel vers leur emplacement d'origine.
+  - **Annulation sélective** : choisissez, fichier par fichier, lesquels du
+    dernier lot remettre en place — les autres restent rangés, disponibles
+    pour une annulation ultérieure.
+  - **Annuler le lot sélectionné** (onglet Historique) : annule n'importe
+    quel lot passé, pas seulement le plus récent.
+- **Détail d'un lot** (double-clic sur une ligne de l'onglet Historique) :
+  liste complète des fichiers traités pour ce lot précis (catégorie,
+  destination, raison, statut, détail d'une éventuelle erreur), avec un
+  bouton pour réexporter le rapport HTML de ce lot en particulier.
+- **Export / import de configuration** : sauvegardez vos réglages (chemins,
+  exclusions, catégories personnalisées...) dans un fichier JSON pour les
+  transférer vers un autre PC ou les restaurer après une réinstallation.
+- **Indicateur de mise à jour disponible** en barre de statut, avec lien
+  direct vers la dernière release GitHub (voir « Vérification de mise à
+  jour » ci-dessous).
 - **Exclusions personnalisées** : par extension, par nom de fichier exact, ou
   par motif glob additionnel (ex. `*.bak`).
 - **Protections intégrées toujours actives** : `*.crdownload`, `*.part`,
-  `*.tmp`, `desktop.ini`, `*.download` sont exclus en permanence, même si le
-  champ « Motifs » est vidé.
+  `*.tmp`, `desktop.ini`, `*.download`, `*.opdownload`, `*.!ut`, `*.!qb`
+  (fichiers de téléchargement en cours de Chrome/Edge/Firefox, Opera,
+  uTorrent, qBittorrent) et `*.lnk` (raccourcis Windows, potentiellement
+  cassés par un déplacement si leur cible est un chemin relatif) sont exclus
+  en permanence, même si le champ « Motifs » est vidé.
 - **Aucune suppression automatique** : les déplacements ne remplacent jamais
   un fichier déjà présent à la destination (ni à l'aller, ni lors d'une
   annulation) — en cas de conflit, ce fichier est simplement laissé de côté
@@ -108,10 +151,32 @@ fichier et retéléchargez-le depuis la page officielle des releases.
   planter l'application. Pour `history.jsonl` (une ligne JSON par lot), une
   ligne isolée corrompue est simplement ignorée sans faire perdre le reste de
   l'historique.
-- **Journal d'activité** (`~/.download_organizer/app.log`) pour diagnostiquer
-  un problème.
+- **Journal d'activité** (`~/.download_organizer/app.log`), avec rotation
+  automatique (2 fichiers de sauvegarde de 1 Mo maximum chacun, en plus du
+  fichier courant) pour ne jamais grossir indéfiniment.
 - **Raccourcis clavier** : `Ctrl+S` (enregistrer), `F5` (simuler),
-  `Ctrl+Entrée` (ranger), `Ctrl+Z` (annuler).
+  `Ctrl+Entrée` (ranger), `Ctrl+Z` (annuler), ainsi que des mnémoniques
+  `Alt+S` (Simuler), `Alt+R` (Ranger les fichiers) et `Alt+A` (Annuler le
+  dernier rangement) pour une navigation clavier sans souris.
+
+### Vérification de mise à jour
+
+Au démarrage de l'interface graphique, l'application effectue une requête
+HTTPS **anonyme** (`GET https://api.github.com/repos/.../releases/latest`,
+aucune donnée personnelle ni identifiant machine envoyé) pour savoir si une
+nouvelle version est disponible. Un échec (hors ligne, GitHub inaccessible)
+est silencieux et ne bloque jamais l'application. C'est le **seul** flux
+réseau de toute l'application — voir [Vie privée](#vie-privée). Il peut être
+désactivé depuis l'onglet **Réglages avancés → Mises à jour** (case à
+cocher « Vérifier les mises à jour au démarrage ») pour un usage strictement
+hors ligne/air-gapped.
+
+## Vie privée
+
+Aucune télémétrie, aucun compte, aucune donnée envoyée à un serveur autre
+que la vérification de mise à jour décrite ci-dessus (désactivable). La
+configuration, l'historique des déplacements et le journal d'activité
+restent en clair sur votre disque local, dans `~/.download_organizer/`.
 
 ## Prise en main de l'interface
 
@@ -199,17 +264,23 @@ l'interface graphique. L'historique des lots réels est dans
 Pas nécessaire pour un usage normal — voir [Démarrage
 rapide](#démarrage-rapide) pour télécharger l'exécutable déjà compilé. Cette
 section sert à reconstruire l'exe soi-même après une modification du code,
-via [PyInstaller](https://pyinstaller.org/) :
+via [PyInstaller](https://pyinstaller.org/), avec une version **figée**
+(`requirements-build.txt`) plutôt qu'un `pip install pyinstaller` sans
+contrainte : deux builds de la même version de code à des dates différentes
+pourraient sinon produire des binaires légèrement différents (bootloader
+PyInstaller différent), ce qui complique le diagnostic d'un bug spécifique
+au packaging :
 
 ```bash
-python -m pip install pyinstaller
+python -m pip install -r requirements-build.txt
 python -m PyInstaller NettoyeurTelechargements.spec
 ```
 
 L'exécutable est produit dans `dist/NettoyeurTelechargements.exe` (~11 Mo,
 fichier unique, sans console). Le fichier `.spec` du dépôt fixe la
-configuration de build (mode fenêtré, un seul fichier) pour un résultat
-reproductible — pas besoin de refaire `pyinstaller gui.py` à la main.
+configuration de build (mode fenêtré, un seul fichier, icône
+`assets/icon.ico`) pour un résultat reproductible — pas besoin de refaire
+`pyinstaller gui.py` à la main.
 
 Les dossiers `build/` et `dist/` générés par PyInstaller ne sont pas suivis
 par Git (voir `.gitignore`) : à regénérer localement à chaque fois.
@@ -244,10 +315,15 @@ python -m unittest tests.test_organizer -v
 ```
 organizer.py                     # logique métier + CLI
 gui.py                           # interface graphique Tkinter
-tests/test_organizer.py          # tests automatises
+update_checker.py                # vérification de mise à jour (API GitHub)
+assets/icon.ico                  # icône de l'application (fenêtre + exécutable)
+tests/test_organizer.py          # tests automatises (logique métier/CLI)
+tests/test_gui.py                # tests automatises (interface graphique)
+tests/test_update_checker.py     # tests automatises (vérification de mise à jour)
 Lancer.vbs                       # raccourci de lancement double-clic (sans console)
 Lancer.bat                       # raccourci de lancement double-clic (avec console, pour debug)
 NettoyeurTelechargements.spec    # configuration de build PyInstaller (.exe autonome)
+requirements-build.txt           # version figée de PyInstaller (build uniquement)
 .gitignore                       # build/, dist/, __pycache__/, etc. non suivis
 LICENSE                          # licence MIT
 README.md

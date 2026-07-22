@@ -5,7 +5,13 @@ a = Analysis(
     ['gui.py'],
     pathex=[],
     binaries=[],
-    datas=[],
+    # assets/icon.ico embarque dans l'exe onefile (audit D8/E1) : icon= sur
+    # EXE() ci-dessous ne sert que l'icone du FICHIER exe/l'icone Explorateur/
+    # barre des taches - la fenetre elle-meme (self.iconbitmap dans gui.py)
+    # doit pouvoir relire ce meme fichier depuis le dossier temporaire
+    # d'extraction PyInstaller (sys._MEIPASS) au demarrage, d'ou cette entree
+    # 'datas' qui le rend accessible a l'execution, pas seulement au build.
+    datas=[('assets/icon.ico', 'assets')],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
@@ -35,4 +41,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    icon='assets/icon.ico',
 )

@@ -117,6 +117,50 @@ class OrganizerTestCase(unittest.TestCase):
         self.assertEqual(batch["moves"][0]["status"], "erreur")
         self.assertIn("existe deja", batch["moves"][0]["error"])
 
+    # -- audit B2 : indicateur de progression pendant plan()/execute() -----
+
+    def test_plan_progress_callback_reports_every_entry_up_to_the_total(self):
+        for index in range(4):
+            self._write(f"doc{index}.pdf")
+        (self.downloads / "un_sous_dossier").mkdir()  # aussi compte comme une entree
+        o = self._organizer()
+        calls = []
+        result = o.plan(progress_callback=lambda done, total: calls.append((done, total)))
+
+        self.assertEqual(len(result.moves), 4)
+        # 4 fichiers + 1 sous-dossier = 5 entrees examinees.
+        self.assertEqual(len(calls), 5)
+        # Toujours le meme total, une progression strictement croissante de 1 a 5.
+        self.assertTrue(all(total == 5 for _done, total in calls))
+        self.assertEqual([done for done, _total in calls], [1, 2, 3, 4, 5])
+
+    def test_plan_without_progress_callback_still_works(self):
+        self._write("a.pdf")
+        o = self._organizer()
+        result = o.plan()  # aucune exception meme sans callback (valeur par defaut None)
+        self.assertEqual(len(result.moves), 1)
+
+    def test_execute_progress_callback_reports_every_move(self):
+        for index in range(3):
+            self._write(f"doc{index}.pdf", content=f"contenu-{index}")
+        o = self._organizer()
+        result = o.plan()
+        self.assertEqual(len(result.moves), 3)
+
+        calls = []
+        o.execute(result, simulate=False, progress_callback=lambda done, total: calls.append((done, total)))
+
+        self.assertEqual(calls, [(1, 3), (2, 3), (3, 3)])
+
+    def test_execute_simulate_progress_callback_reports_every_move(self):
+        for index in range(2):
+            self._write(f"doc{index}.pdf")
+        o = self._organizer()
+        result = o.plan()
+        calls = []
+        o.execute(result, simulate=True, progress_callback=lambda done, total: calls.append((done, total)))
+        self.assertEqual(calls, [(1, 2), (2, 2)])
+
     def test_same_batch_collision_does_not_overwrite(self):
         # Deux fichiers sources distincts qui, sans reservation en memoire,
         # se verraient attribuer la meme destination "dedupliquee".
@@ -584,11 +628,56 @@ class OrganizerTestCase(unittest.TestCase):
         result = o.plan()
         self.assertEqual(len(result.moves), 0)
 
+    def test_builtin_protections_cover_partial_download_variants_and_shortcuts(self):
+        # Audit A8 (note)/A9 : *.opdownload (Opera), *.!ut/*.!qb (torrent) et
+        # *.lnk (raccourcis Windows) doivent rester proteges en permanence,
+        # meme vieux et meme avec des exclusions personnalisees videes -
+        # exactement comme *.crdownload/*.part/*.tmp/desktop.ini/*.download.
+        old_time = time.time() - 200 * 86400
+        names = ["film.opdownload", "installeur.exe.!ut", "jeu.!qb", "Raccourci.lnk"]
+        for name in names:
+            f = self._write(name)
+            os.utime(f, (old_time, old_time))
+        o = self._organizer(exclusions={"extensions": [], "filenames": [], "patterns": []})
+        result = o.plan()
+        self.assertEqual(len(result.moves), 0)
+        self.assertEqual(len(result.excluded), len(names))
+
     def test_filename_exclusion_is_case_insensitive(self):
         self._write("Rapport.pdf")
         o = self._organizer(exclusions={"extensions": [], "filenames": ["rapport.pdf"], "patterns": []})
         result = o.plan()
         self.assertEqual(len(result.moves), 0)
+
+    # -- audit L1 : app.log ne grossit plus indefiniment (rotation) --------
+
+    def test_log_file_uses_a_rotating_handler_with_a_bounded_size(self):
+        org._ensure_logging_configured()
+        self.assertEqual(len(org.logger.handlers), 1)
+        handler = org.logger.handlers[0]
+        self.assertIsInstance(handler, org.logging.handlers.RotatingFileHandler)
+        self.assertEqual(handler.maxBytes, org.LOG_MAX_BYTES)
+        self.assertEqual(handler.backupCount, org.LOG_BACKUP_COUNT)
+
+    def test_log_rotation_caps_the_number_of_backup_files(self):
+        # Force un tout petit plafond pour declencher plusieurs rotations
+        # sans avoir a ecrire un vrai megaoctet de journal dans ce test.
+        org.APP_DIR.mkdir(parents=True, exist_ok=True)
+        original_max_bytes, original_backup_count = org.LOG_MAX_BYTES, org.LOG_BACKUP_COUNT
+        org.LOG_MAX_BYTES, org.LOG_BACKUP_COUNT = 500, 2
+        try:
+            org._ensure_logging_configured()
+            for i in range(200):
+                org.logger.warning("ligne de journal de test numero %d - contenu de remplissage", i)
+        finally:
+            org.LOG_MAX_BYTES, org.LOG_BACKUP_COUNT = original_max_bytes, original_backup_count
+
+        self.assertTrue(org.LOG_FILE.exists())
+        # Au plus backupCount fichiers de sauvegarde (.1, .2, ...) en plus du
+        # fichier courant - jamais une croissance illimitee du nombre de
+        # fichiers ni de leur taille individuelle.
+        backups = sorted(org.LOG_FILE.parent.glob(org.LOG_FILE.name + ".*"))
+        self.assertLessEqual(len(backups), 2)
 
     # -- robustesse config/historique ---------------------------------------
 
@@ -1021,7 +1110,12 @@ class OrganizerTestCase(unittest.TestCase):
         real_move = org.shutil.move
         moved_before_crash = []
 
-        def crashing_move(src, dst):
+        def crashing_move(src, dst, *args, **kwargs):
+            # *args/**kwargs : execute() appelle desormais shutil.move avec
+            # copy_function=_copy_via_temp_file (audit A10) - ce mock
+            # remplace shutil.move dans son integralite, il doit donc
+            # accepter (et ignorer) ce kwarg supplementaire pour continuer a
+            # intercepter chaque appel comme avant.
             if len(moved_before_crash) >= 2:
                 raise RuntimeError("arret brutal simule (ex: fin de tache forcee)")
             real_move(src, dst)
@@ -1057,6 +1151,121 @@ class OrganizerTestCase(unittest.TestCase):
         for name in moved_names:
             self.assertTrue((self.downloads / name).exists())
             self.assertFalse((self.target / "Documents" / "PDF" / name).exists())
+
+    # -- audit A10 : pas de fichier tronque en cas d'arret brutal pendant --
+    # -- une copie inter-volume (shutil.move retombe sur copy_function) ----
+
+    def test_inter_volume_move_uses_copy_function_and_completes_normally(self):
+        # Regression audit A10 : verifie que le copy_function personnalise
+        # (_copy_via_temp_file) est bien utilise sur le chemin "inter-volume"
+        # simule ici (os.rename force a echouer, comme un vrai deplacement
+        # entre deux disques) et qu'un deplacement normal, non interrompu,
+        # aboutit toujours a un fichier complet et correct a destination.
+        import unittest.mock as mock
+        content = "contenu du fichier deplace inter-volume" * 100
+        self._write("gros.pdf", content)
+        o = self._organizer()
+        result = o.plan()
+
+        real_rename = org.os.rename
+
+        def failing_rename(src, dst, *args, **kwargs):
+            # Simule l'echec typique d'un renommage inter-disque
+            # (WinError 17 sous Windows), qui fait retomber shutil.move sur
+            # copy_function.
+            raise OSError("simulation : renommage impossible entre deux volumes distincts")
+
+        with mock.patch.object(org.os, "rename", side_effect=failing_rename):
+            batch = o.execute(result, simulate=False)
+
+        moved = [m for m in batch["moves"] if m["status"] == "deplace"]
+        self.assertEqual(len(moved), 1)
+        destination = self.target / "Documents" / "PDF" / "gros.pdf"
+        self.assertTrue(destination.exists())
+        self.assertEqual(destination.read_text(), content)
+        # La source a bien ete supprimee (deplacement complet, pas une copie).
+        self.assertFalse((self.downloads / "gros.pdf").exists())
+        # Aucun fichier temporaire ".partial" residuel une fois l'operation
+        # terminee avec succes.
+        leftovers = list(destination.parent.glob("*.partial*"))
+        self.assertEqual(leftovers, [])
+
+    def test_inter_volume_move_interrupted_mid_copy_leaves_no_truncated_file_under_final_name(self):
+        # Coeur de la regression A10 : simule un arret brutal DU PROCESSUS
+        # pendant la phase de copie elle-meme (pas juste une erreur OSError
+        # propre deja geree ailleurs) - avant le correctif, un shutil.move
+        # standard aurait ecrit directement sous le nom final, laissant un
+        # fichier tronque indiscernable d'un fichier complet en cas
+        # d'interruption a cet instant precis. Avec le correctif, la copie
+        # passe par un nom temporaire : le nom final n'existe alors JAMAIS
+        # dans un etat partiel.
+        import unittest.mock as mock
+        self._write("gros.pdf", "contenu original complet")
+        o = self._organizer()
+        result = o.plan()
+
+        def failing_rename(src, dst, *args, **kwargs):
+            raise OSError("simulation : renommage impossible entre deux volumes distincts")
+
+        def crashing_copy2(src, dst, *args, **kwargs):
+            # La copie elle-meme est interrompue brutalement (ex: cable USB
+            # debranche, coupure secteur) - jamais un simple retour normal.
+            raise RuntimeError("arret brutal simule pendant la copie inter-volume")
+
+        final_destination = self.target / "Documents" / "PDF" / "gros.pdf"
+        with mock.patch.object(org.os, "rename", side_effect=failing_rename), \
+                mock.patch.object(org.shutil, "copy2", side_effect=crashing_copy2):
+            with self.assertRaises(RuntimeError):
+                o.execute(result, simulate=False)
+
+        # Le nom de destination FINAL ne doit jamais exister dans un etat
+        # partiel/tronque : soit il n'existe pas du tout, soit (si jamais
+        # cree par un autre mecanisme) il serait complet - ici, il ne doit
+        # simplement pas exister.
+        self.assertFalse(final_destination.exists())
+        # Le fichier temporaire eventuellement cree avant l'interruption a
+        # ete nettoye par _copy_via_temp_file lui-meme.
+        leftovers = list(final_destination.parent.glob("*.partial*")) if final_destination.parent.exists() else []
+        self.assertEqual(leftovers, [])
+        # La source, elle, n'a jamais ete touchee (shutil.move ne supprime
+        # la source qu'APRES un copy_function reussi).
+        self.assertTrue((self.downloads / "gros.pdf").exists())
+        self.assertEqual((self.downloads / "gros.pdf").read_text(), "contenu original complet")
+
+    def test_copy_via_temp_file_cleans_up_temp_file_on_failure(self):
+        # Test unitaire cible de _copy_via_temp_file elle-meme (sans passer
+        # par execute()) : une copie qui echoue en cours de route ne doit
+        # jamais laisser de fichier temporaire orphelin ni de fichier sous
+        # le nom final.
+        import unittest.mock as mock
+        source = self.downloads / "source.bin"
+        source.write_bytes(b"donnees")
+        destination = self.target / "sous_dossier" / "destination.bin"
+
+        with mock.patch.object(org.shutil, "copy2", side_effect=OSError("disque plein")):
+            with self.assertRaises(OSError):
+                org._copy_via_temp_file(str(source), str(destination))
+
+        self.assertFalse(destination.exists())
+        leftovers = list(destination.parent.glob("*")) if destination.parent.exists() else []
+        self.assertEqual(leftovers, [], "un fichier temporaire orphelin a ete laisse a la destination")
+
+    def test_copy_via_temp_file_produces_a_complete_file_at_the_final_name(self):
+        source = self.downloads / "source.bin"
+        content = b"contenu binaire de test" * 50
+        source.write_bytes(content)
+        destination = self.target / "sous_dossier" / "destination.bin"
+
+        org._copy_via_temp_file(str(source), str(destination))
+
+        self.assertTrue(destination.exists())
+        self.assertEqual(destination.read_bytes(), content)
+        # La source n'est PAS supprimee par _copy_via_temp_file elle-meme
+        # (c'est le role de l'appelant, shutil.move, une fois copy_function
+        # revenu avec succes) : elle doit donc rester intacte ici.
+        self.assertTrue(source.exists())
+        leftovers = [p for p in destination.parent.glob("*") if p != destination]
+        self.assertEqual(leftovers, [])
 
     def test_undo_with_malformed_history_entry_does_not_crash(self):
         self._write("a.pdf")
