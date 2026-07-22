@@ -883,6 +883,43 @@ class OrganizerTestCase(unittest.TestCase):
         finally:
             org.MAX_HISTORY_BATCHES = original_max
 
+    def test_execute_checkpointing_survives_compaction_triggered_mid_batch(self):
+        # Cas limite du correctif A1 : si le plafond MAX_HISTORY_BATCHES est
+        # deja atteint au moment ou execute() ecrit son tout premier
+        # checkpoint (lot encore vide, avant le premier deplacement reel),
+        # append_batch_to_history() declenche un compactage complet qui
+        # reecrit l'integralite du fichier JSONL - invalidant l'offset
+        # initialement calcule pour ce lot. execute() doit malgre tout
+        # continuer a checkpointer correctement ce lot jusqu'au bout (offset
+        # recalcule en consequence), sans corrompre l'historique.
+        original_max = org.MAX_HISTORY_BATCHES
+        org.MAX_HISTORY_BATCHES = 2
+        try:
+            org.append_batch_to_history({"timestamp": "ancien-1", "simulated": False, "moves": []})
+            org.append_batch_to_history({"timestamp": "ancien-2", "simulated": False, "moves": []})
+
+            self._write("a.pdf")
+            self._write("b.pdf")
+            self._write("c.pdf")
+            o = self._organizer()
+            result = o.plan()
+            batch = o.execute(result, simulate=False)
+
+            self.assertNotIn("history_error", batch)
+            moved = [m for m in batch["moves"] if m["status"] == "deplace"]
+            self.assertEqual(len(moved), 3)
+
+            history = org.load_history()
+            # Le plafond a bien retire les 2 lots les plus anciens, ne
+            # laissant que le lot reel fraichement execute.
+            self.assertEqual(len(history), 2)
+            self.assertFalse(history[-1].get("simulated"))
+            self.assertEqual(
+                len([m for m in history[-1]["moves"] if m["status"] == "deplace"]), 3
+            )
+        finally:
+            org.MAX_HISTORY_BATCHES = original_max
+
     def test_config_persists_across_reload(self):
         cfg = copy.deepcopy(org.DEFAULT_CONFIG)
         cfg["downloads_dir"] = str(self.downloads)
@@ -904,6 +941,66 @@ class OrganizerTestCase(unittest.TestCase):
         moved = [m for m in batch["moves"] if m["status"] == "deplace"]
         self.assertEqual(len(moved), 1)
         self.assertTrue((self.target / "Documents" / "PDF" / "a.pdf").exists())
+
+    def test_history_survives_a_hard_interruption_mid_batch(self):
+        # Regression audit A1 (Critique) : avant le correctif, execute()
+        # n'ecrivait l'historique qu'une seule fois, apres la fin complete
+        # de la boucle de deplacement. Un arret brutal du processus (fin de
+        # tache forcee, coupure de courant, plantage) en plein milieu d'un
+        # gros lot laissait alors les fichiers deja physiquement deplaces
+        # SANS AUCUNE trace dans l'historique, ni possibilite d'annulation.
+        #
+        # On simule cet arret brutal en interrompant shutil.move par une
+        # exception non geree par execute() (pas un simple OSError, deja
+        # capture proprement comme un echec de fichier individuel isole) au
+        # milieu d'un lot de 5 fichiers, apres 2 deplacements physiques deja
+        # reussis - execute() ne doit donc jamais retourner de resultat.
+        import unittest.mock as mock
+        for index in range(5):
+            self._write(f"doc{index}.pdf", content=f"contenu-{index}")
+        o = self._organizer()
+        result = o.plan()
+        self.assertEqual(len(result.moves), 5)
+
+        real_move = org.shutil.move
+        moved_before_crash = []
+
+        def crashing_move(src, dst):
+            if len(moved_before_crash) >= 2:
+                raise RuntimeError("arret brutal simule (ex: fin de tache forcee)")
+            real_move(src, dst)
+            moved_before_crash.append(src)
+
+        with mock.patch.object(org.shutil, "move", side_effect=crashing_move):
+            with self.assertRaises(RuntimeError):
+                o.execute(result, simulate=False)
+
+        self.assertEqual(len(moved_before_crash), 2)
+
+        # Les fichiers deplaces AVANT l'interruption doivent malgre tout
+        # etre retrouves, complets, dans l'historique persiste sur disque -
+        # execute() n'a pourtant jamais eu l'occasion de retourner (donc
+        # jamais atteint l'ancien site d'ecriture unique en fin de boucle).
+        history = org.load_history()
+        self.assertEqual(len(history), 1)
+        batch = history[0]
+        self.assertFalse(batch.get("simulated"))
+        moved_entries = [m for m in batch["moves"] if m["status"] == "deplace"]
+        moved_names = {Path(p).name for p in moved_before_crash}
+        self.assertEqual({Path(m["source"]).name for m in moved_entries}, moved_names)
+        self.assertEqual(len(moved_entries), 2)
+        # Les 3 fichiers restants (jamais atteints avant l'interruption) ne
+        # doivent pas apparaitre comme deplaces dans ce checkpoint.
+        self.assertEqual(len(batch["moves"]), 2)
+
+        # Et donc bien annulables, comme l'exige l'audit : undo_last_batch()
+        # doit pouvoir les remettre a leur emplacement d'origine.
+        out = o.undo_last_batch()
+        self.assertEqual(len(out["undone"]), 2)
+        self.assertEqual(out["errors"], [])
+        for name in moved_names:
+            self.assertTrue((self.downloads / name).exists())
+            self.assertFalse((self.target / "Documents" / "PDF" / name).exists())
 
     def test_undo_with_malformed_history_entry_does_not_crash(self):
         self._write("a.pdf")
@@ -1230,6 +1327,56 @@ class HistoryJsonlTestCase(unittest.TestCase):
         self.assertEqual(len(lines), 10)
         self.assertEqual([json.loads(l)["index"] for l in lines], list(range(10)))
         self.assertEqual([b["index"] for b in org.load_history()], list(range(10)))
+
+    def test_append_batch_to_history_returns_offset_usable_for_in_place_update(self):
+        # append_batch_to_history() renvoie desormais (offset, longueur) en
+        # octets de la ligne fraichement ecrite, condition necessaire pour
+        # que execute() puisse checkpointer la progression d'un lot reel en
+        # reecrivant cette meme ligne EN PLACE au fil des deplacements
+        # (correctif audit A1), plutot que d'attendre la fin de la boucle.
+        offset, length = org.append_batch_to_history({"index": 0, "moves": []})
+        self.assertEqual(offset, 0)
+        jsonl_path = org._history_jsonl_path()
+        self.assertEqual(length, jsonl_path.stat().st_size)
+
+        new_length = org.update_batch_checkpoint(offset, length, {"index": 0, "moves": ["a"]})
+        lines = jsonl_path.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(len(lines), 1)
+        self.assertEqual(json.loads(lines[0])["moves"], ["a"])
+        self.assertEqual(new_length, jsonl_path.stat().st_size)
+
+    def test_update_batch_checkpoint_never_touches_previous_lines(self):
+        # La mise a jour en place d'un checkpoint ne doit reecrire QUE la
+        # ligne visee (par offset), jamais relire ni retoucher les lots
+        # precedents deja presents dans le fichier - sinon le cout de
+        # checkpointer un gros lot reintroduirait le cout quadratique que
+        # l'optimisation JSONL append-only (commit 7834cb5) avait elimine.
+        org.append_batch_to_history({"index": 0, "moves": ["intact"]})
+        offset, length = org.append_batch_to_history({"index": 1, "moves": []})
+        org.update_batch_checkpoint(offset, length, {"index": 1, "moves": ["x", "y", "z"]})
+
+        history = org.load_history()
+        self.assertEqual(len(history), 2)
+        self.assertEqual(history[0], {"index": 0, "moves": ["intact"]})
+        self.assertEqual(history[1]["moves"], ["x", "y", "z"])
+
+    def test_update_batch_checkpoint_shrinking_content_truncates_correctly(self):
+        # Le statut d'une entree peut se resumer au fil du lot (ex :
+        # "erreur" -> "deplace", chaines de longueurs differentes) : la
+        # ligne mise a jour doit rester un JSON valide meme quand elle
+        # devient plus COURTE que la version precedente (troncature du
+        # fichier au bon endroit, pas de garbage residuel en fin de ligne).
+        offset, length = org.append_batch_to_history(
+            {"index": 0, "moves": ["une-tres-longue-entree-initiale-de-test"]}
+        )
+        new_length = org.update_batch_checkpoint(offset, length, {"index": 0, "moves": []})
+        self.assertLess(new_length, length)
+
+        jsonl_path = org._history_jsonl_path()
+        self.assertEqual(jsonl_path.stat().st_size, offset + new_length)
+        history = org.load_history()
+        self.assertEqual(len(history), 1)
+        self.assertEqual(history[0]["moves"], [])
 
     def test_migration_from_legacy_json_array_preserves_all_batches(self):
         org.APP_DIR.mkdir(parents=True, exist_ok=True)

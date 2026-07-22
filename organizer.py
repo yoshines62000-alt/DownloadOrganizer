@@ -513,7 +513,44 @@ def save_history(history: list) -> None:
 MAX_HISTORY_BATCHES = 2000
 
 
-def append_batch_to_history(batch: dict) -> None:
+# Frequence de checkpoint incremental du lot en cours pendant execute() (voir
+# audit A1 : sans checkpoint, l'historique n'etait ecrit qu'une seule fois, a
+# la toute fin de la boucle de deplacement). Les HISTORY_CHECKPOINT_INTERVAL
+# premiers fichiers de chaque lot reel sont toujours checkpointes un par un
+# (fenetre de risque la plus probable en pratique), le reste du lot ne l'est
+# plus qu'une fois tous les HISTORY_CHECKPOINT_INTERVAL fichiers - voir
+# execute() pour le detail et la justification (checkpointer litteralement
+# chaque fichier d'un tres gros lot degraderait sensiblement la performance,
+# chaque checkpoint reecrivant l'integralite du lot deja traite).
+HISTORY_CHECKPOINT_INTERVAL = 50
+
+
+def _last_line_offset(jsonl_path: Path) -> int:
+    """Renvoie l'offset en octets ou commence la derniere ligne non vide du
+    fichier JSONL. Lit le fichier entier - n'est utilise qu'apres un
+    compactage (rare, uniquement au franchissement de MAX_HISTORY_BATCHES),
+    ou une reecriture complete a deja eu lieu et ou l'on a simplement besoin
+    de relocaliser le lot le plus recent dans le fichier fraichement
+    reecrit."""
+    content = jsonl_path.read_bytes()
+    trimmed = content.rstrip(b"\r\n")
+    idx = trimmed.rfind(b"\n")
+    return idx + 1 if idx != -1 else 0
+
+
+def append_batch_to_history(batch: dict) -> tuple:
+    """Ajoute `batch` en fin de fichier JSONL - un vrai append, sans jamais
+    relire ni reecrire les lots deja presents (cout independant de la
+    taille totale de l'historique deja accumule, cf. commit 7834cb5).
+
+    Renvoie (offset, longueur) en octets du debut de la ligne fraichement
+    ecrite, pour permettre a l'appelant de la mettre a jour EN PLACE par la
+    suite via update_batch_checkpoint - utilise par execute() pour
+    checkpointer la progression d'un lot reel au fur et a mesure des
+    deplacements plutot que d'attendre la toute fin de la boucle (voir
+    audit A1 : sans cela, un arret brutal du processus en plein milieu d'un
+    gros lot laissait les fichiers deja deplaces sans aucune trace
+    recuperable dans l'historique)."""
     jsonl_path = _history_jsonl_path()
     if not jsonl_path.exists():
         # Declenche la migration une seule fois (no-op si aucun history.json
@@ -527,8 +564,22 @@ def append_batch_to_history(batch: dict) -> None:
         count = len(load_history())
 
     jsonl_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(jsonl_path, "a", encoding="utf-8") as f:
-        f.write(json.dumps(batch, ensure_ascii=False) + "\n")
+    # Ecriture en mode binaire (et non texte) : necessaire pour que l'offset
+    # renvoye soit un veritable decalage en octets, exploitable ensuite par
+    # update_batch_checkpoint via seek()/truncate() - la traduction de fin de
+    # ligne du mode texte (\n -> \r\n sous Windows) rendrait ce calcul
+    # ambigu. Les lignes JSONL restent lisibles indifferemment (load_history
+    # se base sur str.splitlines(), qui reconnait aussi bien \n que \r\n).
+    # offset lu via tell() juste apres l'ouverture en mode "ab" (position
+    # deja au bout du fichier a l'ouverture en mode append, cree vide si
+    # absent) plutot que via un stat() separe avant l'ouverture, pour
+    # reduire au minimum la fenetre entre la lecture de la position et
+    # l'ecriture elle-meme.
+    line = json.dumps(batch, ensure_ascii=False).encode("utf-8") + b"\n"
+    with open(jsonl_path, "ab") as f:
+        offset = f.tell()
+        f.write(line)
+    length = len(line)
     count += 1
     _history_count_cache = {"path": jsonl_path, "count": count}
 
@@ -537,6 +588,65 @@ def append_batch_to_history(batch: dict) -> None:
         # plafond) plutot qu'a chaque ajout comme avant.
         history = load_history()[-MAX_HISTORY_BATCHES:]
         _write_history_jsonl(history)
+        # Le compactage reecrit l'integralite du fichier : l'offset calcule
+        # ci-dessus n'est plus valide. Le lot qu'on vient d'ajouter est
+        # forcement le plus recent, donc toujours en derniere ligne -
+        # relocalise sa position exacte (cout O(taille totale de
+        # l'historique), mais uniquement dans ce cas rare, deja accepte
+        # comme cout intrinseque du compactage lui-meme).
+        offset = _last_line_offset(jsonl_path)
+        length = jsonl_path.stat().st_size - offset
+
+    return offset, length
+
+
+def update_batch_checkpoint(offset: int, length: int, batch: dict, file_obj=None) -> int:
+    """Reecrit EN PLACE, a l'octet pres, la ligne JSONL precedemment ecrite a
+    `offset` (de longueur `length` octets, cf. append_batch_to_history) avec
+    l'etat a jour de `batch` - sans jamais relire ni reecrire les lots
+    precedents du fichier. La nouvelle ligne peut avoir une longueur
+    differente de l'ancienne (les entrees changent de statut au fil des
+    deplacements) : le contenu est tronque/etendu en consequence a partir de
+    `offset`, jamais au-dela.
+
+    Cout O(taille d'un seul lot), independant de la taille totale de
+    l'historique - c'est ce qui permet a execute() de checkpointer la
+    progression d'un gros lot reel sans reintroduire le cout quadratique que
+    le format JSONL append-only (commit 7834cb5) avait justement elimine.
+
+    `file_obj`, si fourni, doit etre un fichier deja ouvert en mode "r+b" sur
+    le fichier JSONL courant : il est alors reutilise directement plutot que
+    d'ouvrir puis refermer un nouveau handle a chaque appel (execute() garde
+    ainsi un seul handle ouvert pour toute la duree d'un gros lot, cout non
+    negligeable de l'ouverture/fermeture repetee mesure empiriquement sur de
+    tres gros lots). Dans les deux cas, un flush() explicite est effectue
+    apres l'ecriture pour que les octets quittent bien le tampon Python et
+    atteignent l'OS avant de rendre la main - sans quoi reutiliser un handle
+    ouvert sur toute la duree du lot pourrait laisser un checkpoint recent
+    uniquement dans un tampon en memoire de processus, jamais persiste si le
+    processus est tue brutalement (exactement le risque que ce mecanisme de
+    checkpoint est cense eliminer, cf. audit A1) : fermer un fichier force
+    deja ce flush, mais un handle garde ouvert entre deux checkpoints ne le
+    ferait pas sans cet appel explicite.
+
+    A n'utiliser que sur la toute derniere ligne du fichier (aucune ligne
+    ajoutee apres celle-ci entretemps) : c'est garanti tant qu'un seul lot
+    reel est execute a la fois (execute() est le seul appelant). Renvoie la
+    nouvelle longueur en octets, a repasser au prochain appel."""
+    line = json.dumps(batch, ensure_ascii=False).encode("utf-8") + b"\n"
+    if file_obj is not None:
+        file_obj.seek(offset)
+        file_obj.write(line)
+        file_obj.truncate(offset + len(line))
+        file_obj.flush()
+    else:
+        jsonl_path = _history_jsonl_path()
+        with open(jsonl_path, "r+b") as f:
+            f.seek(offset)
+            f.write(line)
+            f.truncate(offset + len(line))
+            f.flush()
+    return len(line)
 
 
 def purge_history(keep_last: Optional[int] = None) -> int:
@@ -1072,6 +1182,34 @@ class DownloadOrganizer:
 
     # -- execution --------------------------------------------------------
 
+    @staticmethod
+    def _checkpoint_history(checkpoint: tuple, batch: dict, file_obj=None, raise_on_error: bool = False) -> tuple:
+        """Reecrit en place le checkpoint d'historique du lot en cours
+        (cf. append_batch_to_history/update_batch_checkpoint) avec l'etat
+        actuel de `batch`. En cours de boucle (raise_on_error=False, valeur
+        par defaut), un echec (disque plein, permissions, antivirus qui
+        verrouille temporairement le fichier) ne fait qu'un avertissement
+        journalise, sans interrompre execute() ni faire perdre les
+        deplacements deja effectues en memoire : l'etat sur disque reste
+        simplement celui du dernier checkpoint reussi, et un nouvel essai a
+        lieu automatiquement au prochain deplacement. Pour l'enregistrement
+        final (raise_on_error=True), l'appelant a besoin de savoir si
+        l'ecriture a effectivement reussi (pour positionner
+        batch["history_error"] le cas echeant), donc l'exception est
+        laissee remonter. `file_obj` est transmis tel quel a
+        update_batch_checkpoint (handle persistant reutilise pour tout le
+        lot, cf. execute())."""
+        offset, length = checkpoint
+        try:
+            new_length = update_batch_checkpoint(offset, length, batch, file_obj=file_obj)
+            return (offset, new_length)
+        except OSError as exc:
+            if raise_on_error:
+                raise
+            _ensure_logging_configured()
+            logger.error("Echec de la mise a jour incrementale de l'historique : %s", exc)
+            return (offset, length)
+
     def execute(self, result: OrganizeResult, simulate: bool = True) -> dict:
         """Execute (ou simule) les deplacements planifies. Retourne le lot pour l'historique."""
         batch = {
@@ -1080,70 +1218,163 @@ class DownloadOrganizer:
             "moves": [],
         }
 
-        for move in result.moves:
-            entry = {
-                "source": str(move.source),
-                "destination": str(move.destination),
-                "category": move.category,
-                "reason": move.reason,
-                "status": "planifie" if simulate else "erreur",
-            }
-            if not simulate:
-                try:
-                    move.destination.parent.mkdir(parents=True, exist_ok=True)
-                    # Reverification juste avant le deplacement reel : entre plan()
-                    # et execute() (fenetre potentiellement large en Mode Veille, qui
-                    # attend une stabilisation avant de proposer le lot), un fichier a
-                    # pu apparaitre a la destination planifiee. Sans ce garde-fou,
-                    # shutil.move l'ecraserait silencieusement (sur un deplacement
-                    # inter-disque, il retombe sur copy+unlink des que os.rename
-                    # echoue). Meme mecanisme de reverification que
-                    # _attempt_restore_entry pour l'annulation.
-                    if move.destination.exists():
-                        entry["status"] = "erreur"
-                        entry["error"] = (
-                            "un fichier existe deja a cet emplacement (apparu apres la "
-                            "planification) : deplacement annule pour eviter un ecrasement"
-                        )
-                        _ensure_logging_configured()
-                        logger.error(
-                            "Deplacement annule (destination apparue entre plan() et execute()) : %s -> %s",
-                            move.source, move.destination,
-                        )
-                        batch["moves"].append(entry)
-                        continue
-                    shutil.move(str(move.source), str(move.destination))
-                    entry["status"] = "deplace"
-                except OSError as exc:
-                    entry["status"] = "erreur"
-                    entry["error"] = str(exc)
-                    _ensure_logging_configured()
-                    logger.error("Echec du deplacement %s -> %s : %s", move.source, move.destination, exc)
-                    # Sur un deplacement inter-disque, shutil.move copie puis supprime la
-                    # source ; si la copie echoue en cours de route, un fichier partiel/
-                    # tronque peut rester a destination alors que la source existe encore.
-                    # On le nettoie pour ne pas laisser un fichier corrompu se faire passer
-                    # pour le fichier complet.
-                    if move.source.exists() and move.destination.exists():
-                        try:
-                            move.destination.unlink()
-                            entry["error"] += " (fichier partiel nettoye a la destination)"
-                        except OSError:
-                            pass
-            batch["moves"].append(entry)
-
+        # Correctif audit A1 (Critique) : pour un lot reel, l'historique du
+        # lot est checkpointe sur disque au fur et a mesure des
+        # deplacements, pas seulement a la toute fin de la boucle. Sans
+        # cela, un arret brutal du processus (fin de tache forcee, coupure
+        # de courant, plantage systeme) en plein milieu d'un gros lot (ex :
+        # 500 fichiers) laissait les fichiers deja physiquement deplaces
+        # sans AUCUNE trace dans l'historique - ni possibilite
+        # d'annulation, ni visibilite dans l'onglet Historique.
+        #
+        # Le premier checkpoint (lot encore vide) est ecrit ICI, AVANT le
+        # premier deplacement reel, via un vrai append JSONL
+        # (append_batch_to_history - cout independant de la taille de
+        # l'historique deja accumule, commit 7834cb5). Chaque deplacement
+        # traite declenche ensuite une reecriture EN PLACE de cette meme
+        # ligne (_checkpoint_history / update_batch_checkpoint, par
+        # offset/longueur) : jamais une relecture ni reecriture des lots
+        # precedents, pour ne pas reintroduire le cout quadratique que
+        # l'optimisation JSONL append-only avait justement elimine.
+        checkpoint = None
         if not simulate:
-            # Les fichiers ont deja ete physiquement deplaces a ce stade : un
-            # echec d'ecriture de l'historique (disque plein, permissions,
-            # antivirus) ne doit ni faire planter l'appli ni faire perdre le
-            # resultat du lot. On le signale dans le batch plutot que de
-            # laisser l'exception se propager.
             try:
-                append_batch_to_history(batch)
+                checkpoint = append_batch_to_history(batch)
             except OSError as exc:
                 _ensure_logging_configured()
-                logger.error("Echec de l'enregistrement de l'historique : %s", exc)
-                batch["history_error"] = str(exc)
+                logger.error("Echec de l'enregistrement initial de l'historique : %s", exc)
+
+        # Un seul handle est ouvert (en "r+b") pour toute la duree du lot et
+        # reutilise a chaque checkpoint, plutot que d'ouvrir puis refermer un
+        # nouveau handle a chaque fichier : l'ouverture/fermeture repetee
+        # d'un fichier a elle seule un cout non negligeable sur de tres gros
+        # lots (mesure empiriquement). update_batch_checkpoint flush()
+        # explicitement ce handle apres chaque ecriture, pour que les octets
+        # quittent bien le tampon Python et atteignent l'OS avant de rendre
+        # la main - la protection contre un arret brutal ne depend donc pas
+        # de la fermeture du fichier.
+        checkpoint_file = None
+        if not simulate and checkpoint is not None:
+            try:
+                checkpoint_file = open(_history_jsonl_path(), "r+b")
+            except OSError as exc:
+                _ensure_logging_configured()
+                logger.error("Echec de l'ouverture de l'historique pour checkpoint incremental : %s", exc)
+
+        try:
+            # Chaque checkpoint reecrit l'integralite du lot serialise en JSON
+            # (toutes les entrees deja traitees, pas seulement la derniere) :
+            # checkpointer apres CHAQUE fichier reintroduirait un cout
+            # quadratique sur un gros lot (mesure empiriquement : +336% de
+            # temps d'execution sur 3000 fichiers), exactement le defaut que
+            # l'ecriture JSONL append-only avait elimine pour l'historique
+            # dans son ensemble. HISTORY_CHECKPOINT_INTERVAL borne ce cout :
+            # au-dela des tout premiers fichiers (toujours checkpointes un
+            # par un - c'est la fenetre de risque la plus probable en
+            # pratique, cf. B2 : un utilisateur impatient qui force la
+            # fermeture tot faute d'indicateur de progression), le reste du
+            # lot n'est checkpointe que tous les HISTORY_CHECKPOINT_INTERVAL
+            # fichiers. La fenetre de perte potentielle en cas d'arret brutal
+            # reste ainsi bornee a une poignee de fichiers au pire, au lieu
+            # du lot entier (des centaines de fichiers) comme avant ce
+            # correctif.
+            moves_processed = 0
+            for move in result.moves:
+                entry = {
+                    "source": str(move.source),
+                    "destination": str(move.destination),
+                    "category": move.category,
+                    "reason": move.reason,
+                    "status": "planifie" if simulate else "erreur",
+                }
+                if not simulate:
+                    try:
+                        move.destination.parent.mkdir(parents=True, exist_ok=True)
+                        # Reverification juste avant le deplacement reel : entre plan()
+                        # et execute() (fenetre potentiellement large en Mode Veille, qui
+                        # attend une stabilisation avant de proposer le lot), un fichier a
+                        # pu apparaitre a la destination planifiee. Sans ce garde-fou,
+                        # shutil.move l'ecraserait silencieusement (sur un deplacement
+                        # inter-disque, il retombe sur copy+unlink des que os.rename
+                        # echoue). Meme mecanisme de reverification que
+                        # _attempt_restore_entry pour l'annulation.
+                        if move.destination.exists():
+                            entry["status"] = "erreur"
+                            entry["error"] = (
+                                "un fichier existe deja a cet emplacement (apparu apres la "
+                                "planification) : deplacement annule pour eviter un ecrasement"
+                            )
+                            _ensure_logging_configured()
+                            logger.error(
+                                "Deplacement annule (destination apparue entre plan() et execute()) : %s -> %s",
+                                move.source, move.destination,
+                            )
+                        else:
+                            shutil.move(str(move.source), str(move.destination))
+                            entry["status"] = "deplace"
+                    except OSError as exc:
+                        entry["status"] = "erreur"
+                        entry["error"] = str(exc)
+                        _ensure_logging_configured()
+                        logger.error("Echec du deplacement %s -> %s : %s", move.source, move.destination, exc)
+                        # Sur un deplacement inter-disque, shutil.move copie puis supprime la
+                        # source ; si la copie echoue en cours de route, un fichier partiel/
+                        # tronque peut rester a destination alors que la source existe encore.
+                        # On le nettoie pour ne pas laisser un fichier corrompu se faire passer
+                        # pour le fichier complet.
+                        if move.source.exists() and move.destination.exists():
+                            try:
+                                move.destination.unlink()
+                                entry["error"] += " (fichier partiel nettoye a la destination)"
+                            except OSError:
+                                pass
+                batch["moves"].append(entry)
+                moves_processed += 1
+                # Checkpoint incremental : voir le commentaire au-dessus de la
+                # boucle pour la justification de HISTORY_CHECKPOINT_INTERVAL.
+                if not simulate and checkpoint is not None:
+                    if (
+                        moves_processed <= HISTORY_CHECKPOINT_INTERVAL
+                        or moves_processed % HISTORY_CHECKPOINT_INTERVAL == 0
+                    ):
+                        checkpoint = self._checkpoint_history(checkpoint, batch, file_obj=checkpoint_file)
+
+            if not simulate:
+                # Enregistrement final. Deux cas :
+                # - le tout premier checkpoint avait echoue (checkpoint est
+                #   encore None ici) : on n'a jamais rien ecrit pour ce lot,
+                #   donc on retente un unique append complet (aucun risque de
+                #   doublon, rien n'existe encore sur disque pour ce lot).
+                # - un checkpoint a bien ete etabli : un dernier
+                #   update_batch_checkpoint garantit que l'etat final complet
+                #   est bien celui persiste, meme si une mise a jour
+                #   intermediaire avait echoue temporairement en cours de route.
+                # Comme avant : les fichiers ont deja ete physiquement deplaces
+                # a ce stade, un echec d'ecriture de l'historique (disque plein,
+                # permissions, antivirus) ne doit ni faire planter l'appli ni
+                # faire perdre le resultat du lot en memoire - on le signale
+                # dans le batch plutot que de laisser l'exception se propager.
+                try:
+                    if checkpoint is not None:
+                        self._checkpoint_history(checkpoint, batch, file_obj=checkpoint_file, raise_on_error=True)
+                    else:
+                        append_batch_to_history(batch)
+                except OSError as exc:
+                    _ensure_logging_configured()
+                    logger.error("Echec de l'enregistrement de l'historique : %s", exc)
+                    batch["history_error"] = str(exc)
+        finally:
+            # Ferme systematiquement le handle de checkpoint, y compris si
+            # une exception non geree interrompt la boucle (arret brutal
+            # simule dans les tests, ou toute erreur inattendue) - c'est ce
+            # qui garantit que le dernier checkpoint ecrit reste lisible/non
+            # verrouille pour une lecture ulterieure (ex: undo) plutot que de
+            # laisser un handle ouvert indefiniment.
+            if checkpoint_file is not None:
+                try:
+                    checkpoint_file.close()
+                except OSError:
+                    pass
 
         return batch
 
