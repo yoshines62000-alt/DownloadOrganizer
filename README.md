@@ -34,6 +34,23 @@ Si vous préférez éviter cet avertissement ou vérifier vous-même ce que fait
 le code avant de l'exécuter, voir [Lancer depuis le code
 source](#lancer-depuis-le-code-source) ci-dessous.
 
+### Vérifier l'intégrité du fichier téléchargé (optionnel)
+
+Chaque release GitHub publie, dans ses notes de version, l'empreinte
+**SHA-256** de `NettoyeurTelechargements.exe`. Vous pouvez vérifier que le
+fichier téléchargé correspond exactement à celui publié par le développeur
+(protection contre une altération en transit, une compromission du dépôt, ou
+une confusion entre plusieurs versions) avec PowerShell :
+
+```powershell
+Get-FileHash .\NettoyeurTelechargements.exe -Algorithm SHA256
+```
+
+Comparez la valeur `Hash` affichée avec celle indiquée dans les notes de la
+[release correspondante](https://github.com/yoshines62000-alt/DownloadOrganizer/releases).
+Si les deux empreintes ne correspondent pas exactement, ne lancez pas le
+fichier et retéléchargez-le depuis la page officielle des releases.
+
 ## Fonctionnalités
 
 - **Mode Veille (optionnel)** : surveille le dossier Téléchargements en
@@ -67,7 +84,9 @@ source](#lancer-depuis-le-code-source) ci-dessous.
   rapide même sur un gros dossier déjà trié).
 - **Mode simulation** : prévisualise les déplacements sans toucher aux fichiers.
 - **Historique des déplacements** : chaque lot réel est enregistré dans
-  `~/.download_organizer/history.json`.
+  `~/.download_organizer/history.jsonl` (format JSONL — une ligne JSON par
+  lot). Un ancien fichier `history.json` est migré automatiquement et de
+  façon transparente vers ce nouveau format au premier lancement.
 - **Bouton Annuler** : restaure le dernier lot de déplacements réels vers son
   emplacement d'origine.
 - **Exclusions personnalisées** : par extension, par nom de fichier exact, ou
@@ -84,9 +103,11 @@ source](#lancer-depuis-le-code-source) ci-dessous.
   bouton permet d'exporter un rapport détaillant chaque fichier traité, sa
   destination et la raison du classement — pour vérifier ou auditer ce que
   l'outil a fait.
-- **Robustesse face aux configurations corrompues** : un `config.json` ou
-  `history.json` invalide est mis en quarantaine (renommé, pas perdu) plutôt
-  que de faire planter l'application.
+- **Robustesse face aux configurations corrompues** : un `config.json`
+  invalide est mis en quarantaine (renommé, pas perdu) plutôt que de faire
+  planter l'application. Pour `history.jsonl` (une ligne JSON par lot), une
+  ligne isolée corrompue est simplement ignorée sans faire perdre le reste de
+  l'historique.
 - **Journal d'activité** (`~/.download_organizer/app.log`) pour diagnostiquer
   un problème.
 - **Raccourcis clavier** : `Ctrl+S` (enregistrer), `F5` (simuler),
@@ -169,7 +190,7 @@ python organizer.py --downloads-dir "D:\Autre\Telechargements" --run
 La configuration (dossiers, seuil d'ancienneté, exclusions) est stockée dans
 `~/.download_organizer/config.json` et peut être modifiée directement ou via
 l'interface graphique. L'historique des lots réels est dans
-`~/.download_organizer/history.json`, les rapports exportés dans
+`~/.download_organizer/history.jsonl`, les rapports exportés dans
 `~/.download_organizer/reports/`, et le journal d'activité dans
 `~/.download_organizer/app.log`.
 
@@ -192,6 +213,20 @@ reproductible — pas besoin de refaire `pyinstaller gui.py` à la main.
 
 Les dossiers `build/` et `dist/` générés par PyInstaller ne sont pas suivis
 par Git (voir `.gitignore`) : à regénérer localement à chaque fois.
+
+### Processus de publication d'une release
+
+Avant de rendre une release GitHub publique, calculer l'empreinte SHA-256
+de l'exécutable fraîchement généré :
+
+```powershell
+Get-FileHash dist\NettoyeurTelechargements.exe -Algorithm SHA256 | Format-List
+```
+
+Coller la valeur `Hash` obtenue dans les notes de la release GitHub (ou
+l'attacher en tant qu'asset séparé `NettoyeurTelechargements.exe.sha256`),
+afin que tout utilisateur puisse vérifier hors bande l'intégrité du fichier
+téléchargé (voir « Vérifier l'intégrité du fichier téléchargé » plus haut).
 
 ## Tests
 
