@@ -181,7 +181,13 @@ class OrganizerGUI(tk.Tk):
         # doit rester une tache de fond non intrusive), mais un cycle de
         # veille ne doit jamais non plus se chevaucher avec un autre cycle
         # de veille ni avec une action manuelle en cours (les deux
-        # pourraient deplacer les memes fichiers en meme temps).
+        # pourraient deplacer les memes fichiers en meme temps). Cet
+        # invariant est applique dans les deux sens : _watch_tick refuse de
+        # demarrer un nouveau cycle si self._busy est actif, ET
+        # _simulate/_run_real refusent de demarrer si self._watch_busy est
+        # actif (correctif audit A14 - avant ce correctif, seul le premier
+        # sens etait garde, un declenchement manuel pendant un cycle de
+        # veille en cours n'etait pas bloque).
         self._busy = False
         self._watch_busy = False
         self._action_after_id = None
@@ -771,6 +777,18 @@ class OrganizerGUI(tk.Tk):
         # parallele du premier.
         if self._busy:
             return
+        if self._watch_busy:
+            # Un cycle de Mode Veille (plan() ou execute() d'un lot confirme)
+            # est en cours. La veille ne desactive jamais les boutons
+            # Simuler/Ranger (voir _watch_tick, elle doit rester une tache de
+            # fond non intrusive) : sans ce garde-fou explicite, rien
+            # n'empecherait un second plan()/execute() de demarrer en
+            # parallele sur le meme dossier et de tenter de deplacer les
+            # memes fichiers en meme temps (correctif audit A14).
+            self.status_var.set(
+                "Un cycle de Mode Veille est en cours, reessayez dans quelques instants."
+            )
+            return
         config = self._collect_config()
         if config is None:
             return
@@ -825,6 +843,14 @@ class OrganizerGUI(tk.Tk):
         # Meme garde-fou que _simulate (raccourci Ctrl+Entree independant de
         # l'etat du bouton).
         if self._busy:
+            return
+        if self._watch_busy:
+            # Meme garde-fou que _simulate contre un plan()/execute() lance
+            # en parallele d'un cycle de Mode Veille en cours (correctif
+            # audit A14) : voir le commentaire detaille dans _simulate.
+            self.status_var.set(
+                "Un cycle de Mode Veille est en cours, reessayez dans quelques instants."
+            )
             return
         config = self._collect_config()
         if config is None:

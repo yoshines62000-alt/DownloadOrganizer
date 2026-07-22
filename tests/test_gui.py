@@ -340,6 +340,127 @@ class GuiTestCase(unittest.TestCase):
                 self.app.watch_active = False
                 self.app._busy = False
 
+    # -- correctif audit A14 : un declenchement manuel (Simuler / Ranger les
+    # -- fichiers) doit etre refuse tant qu'un cycle de Mode Veille est en
+    # -- cours (_watch_busy), symetriquement a ce que _watch_tick fait deja
+    # -- vis-a-vis d'une action manuelle en cours (_busy) ci-dessus.
+
+    def test_simulate_is_deferred_while_a_watch_cycle_is_busy(self):
+        (self.downloads / "photo.jpg").write_bytes(b"x" * 100)
+        call_count = {"n": 0}
+        original_plan = org.DownloadOrganizer.plan
+
+        def counting_plan(self_org, *args, **kwargs):
+            call_count["n"] += 1
+            return original_plan(self_org, *args, **kwargs)
+
+        with mock.patch.object(org.DownloadOrganizer, "plan", counting_plan):
+            self.app._watch_busy = True
+            try:
+                self.app._simulate()
+                # Ne doit jamais demarrer de second plan() tant qu'un cycle
+                # de veille est en cours, et ne doit pas non plus faire
+                # progresser _busy/desactiver les boutons (un simple retour
+                # refuse, ce n'est pas un traitement qui demarre).
+                self.assertEqual(call_count["n"], 0)
+                self.assertFalse(self.app._busy)
+                self.assertEqual(str(self.app.simulate_btn.cget("state")), "normal")
+                self.assertIn("Mode Veille", self.app.status_var.get())
+            finally:
+                self.app._watch_busy = False
+
+        # Une fois le cycle de veille termine, le meme appel fonctionne a nouveau.
+        with mock.patch.object(gui, "messagebox") as mocked_messagebox:
+            self.app._simulate()
+            self.assertTrue(self._pump_until(lambda: not self.app._busy))
+            mocked_messagebox.showerror.assert_not_called()
+        self.assertEqual(len(self.app.preview_tree.get_children()), 1)
+
+    def test_run_real_is_deferred_while_a_watch_cycle_is_busy(self):
+        (self.downloads / "photo.jpg").write_bytes(b"x" * 100)
+        call_count = {"n": 0}
+        original_plan = org.DownloadOrganizer.plan
+
+        def counting_plan(self_org, *args, **kwargs):
+            call_count["n"] += 1
+            return original_plan(self_org, *args, **kwargs)
+
+        with mock.patch.object(org.DownloadOrganizer, "plan", counting_plan):
+            self.app._watch_busy = True
+            try:
+                self.app._run_real()
+                self.assertEqual(call_count["n"], 0)
+                self.assertFalse(self.app._busy)
+                self.assertEqual(str(self.app.run_btn.cget("state")), "normal")
+                self.assertIn("Mode Veille", self.app.status_var.get())
+            finally:
+                self.app._watch_busy = False
+
+        # Le fichier n'a pas ete touche par la tentative refusee.
+        self.assertTrue((self.downloads / "photo.jpg").exists())
+
+    def test_manual_run_does_not_double_move_a_file_while_watch_batch_is_executing(self):
+        # Reproduction bout-en-bout du risque decrit par l'audit A14 : sans
+        # le correctif, rien n'empechait un "Ranger les fichiers" manuel de
+        # demarrer un second plan()/execute() en parallele pendant qu'un lot
+        # de Mode Veille deja confirme par l'utilisateur (_watch_busy=True,
+        # positionne par _prompt_watch_batch) est en train de deplacer
+        # physiquement les memes fichiers - avec un risque de traitement en
+        # double du meme fichier par les deux threads. Ce test verrouille
+        # qu'avec le correctif, la tentative manuelle est refusee et qu'un
+        # seul deplacement reel a bien lieu.
+        (self.downloads / "photo.jpg").write_bytes(b"x" * 100)
+
+        worker_organizer = org.DownloadOrganizer(copy.deepcopy(self.app.organizer.config))
+        result = worker_organizer.plan()
+        self.assertEqual(len(result.moves), 1)
+
+        original_execute = org.DownloadOrganizer.execute
+        execute_calls = {"n": 0}
+
+        def slow_execute(self_org, *args, **kwargs):
+            execute_calls["n"] += 1
+            time.sleep(0.4)
+            return original_execute(self_org, *args, **kwargs)
+
+        original_plan = org.DownloadOrganizer.plan
+        plan_calls = {"n": 0}
+
+        def counting_plan(self_org, *args, **kwargs):
+            plan_calls["n"] += 1
+            return original_plan(self_org, *args, **kwargs)
+
+        with mock.patch.object(org.DownloadOrganizer, "execute", slow_execute), \
+                mock.patch.object(org.DownloadOrganizer, "plan", counting_plan), \
+                mock.patch.object(gui, "messagebox") as mocked_messagebox:
+            mocked_messagebox.askyesno.return_value = True
+
+            # Comme le ferait _watch_tick apres confirmation de l'utilisateur :
+            # positionne _watch_busy et demarre execute() sur un thread de fond.
+            self.app.watch_active = True
+            self.app._prompt_watch_batch(worker_organizer, result)
+            self.assertTrue(self.app._watch_busy)
+
+            # Tentative de declenchement manuel PENDANT que ce lot de veille
+            # est encore en train de s'executer (execute() dort encore 0.4s).
+            self.app._run_real()
+            self.assertFalse(self.app._busy)
+            self.assertIn("Mode Veille", self.app.status_var.get())
+            self.assertEqual(plan_calls["n"], 0)
+
+            finished = self._pump_until(lambda: not self.app._watch_busy)
+            self.assertTrue(finished, "le lot de veille ne s'est jamais termine")
+
+            self.app.watch_active = False
+
+        # execute() n'a ete appele qu'une seule fois (par le Mode Veille) :
+        # aucun second plan()/execute() manuel n'a demarre en parallele.
+        self.assertEqual(execute_calls["n"], 1)
+        self.assertEqual(plan_calls["n"], 0)
+        # Le fichier n'a ete deplace qu'une seule fois, pas de double-traitement.
+        self.assertFalse((self.downloads / "photo.jpg").exists())
+        self.assertTrue((self.target / "Images" / "photo.jpg").exists())
+
     # -- fenetre par defaut : contenu essentiel visible sans redimensionner -
 
     def test_default_window_shows_action_buttons_tab_and_status_bar(self):
