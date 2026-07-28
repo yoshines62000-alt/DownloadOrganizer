@@ -973,6 +973,11 @@ class OrganizerGUI(tk.Tk):
             self._fill_preview(result)
             duplicates = [m for m in result.moves if m.category == DUPLICATES_TARGET]
             extra = f", {len(result.skipped_dirs)} sous-dossier(s) non parcouru(s)" if result.skipped_dirs else ""
+            extra += (
+                f", {len(result.skipped_symlinks)} lien(s) symbolique(s) ignore(s)"
+                if result.skipped_symlinks
+                else ""
+            )
             dup_note = f", dont {len(duplicates)} doublon(s) de contenu detecte(s)" if duplicates else ""
             self.status_var.set(
                 f"Simulation : {len(result.moves)} fichier(s) seraient deplaces{dup_note}, "

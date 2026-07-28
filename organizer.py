@@ -270,6 +270,13 @@ def _atomic_write_text(path: Path, text: str) -> None:
         raise
 
 
+class _DestinationAppearedError(OSError):
+    """Levee quand la destination apparait entre le debut de la copie et le
+    renommage final (course inter-volume) : distincte d'une erreur de copie
+    ordinaire pour que execute() ne supprime pas ce fichier, qui n'est PAS le
+    notre (voir _copy_via_temp_file)."""
+
+
 def _copy_via_temp_file(source: str, destination: str) -> None:
     """`copy_function` personnalise transmis a `shutil.move` (audit A10).
 
@@ -308,6 +315,19 @@ def _copy_via_temp_file(source: str, destination: str) -> None:
     os.close(fd)
     try:
         shutil.copy2(source, tmp_name)
+        # Reverification juste avant le renommage final (audit 2026-07-28,
+        # finding eleve DownloadOrganizer/organizer.py:311) : execute() ne
+        # verifie l'absence de la destination qu'AVANT d'appeler shutil.move,
+        # donc avant cette copie. Pour un deplacement inter-volume, la copie
+        # ci-dessus peut prendre un temps notable (gros fichier, disque
+        # lent) : une autre destination legitime a pu apparaitre entre-temps.
+        # os.replace ecraserait silencieusement ce fichier ; on l'evite en
+        # revalidant juste avant. _DestinationAppearedError distingue ce cas
+        # du "fichier partiel a nous" pour que execute() ne le supprime pas.
+        if destination_path.exists():
+            raise _DestinationAppearedError(
+                f"la destination est apparue pendant la copie (course inter-volume) : {destination}"
+            )
         os.replace(tmp_name, destination)
     except Exception:
         try:
@@ -769,6 +789,7 @@ class OrganizeResult:
     excluded: list = field(default_factory=list)      # list[Path] ignores (exclusion ou non categorise)
     errors: list = field(default_factory=list)        # list[tuple[Path, str]]
     skipped_dirs: list = field(default_factory=list)  # list[Path] sous-dossiers non parcourus
+    skipped_symlinks: list = field(default_factory=list)  # list[Path] liens/reparse points ignores
 
 
 # ---------------------------------------------------------------------------
@@ -1102,6 +1123,16 @@ class DownloadOrganizer:
             # deplacement.
             if progress_callback is not None:
                 progress_callback(index, total_entries)
+            # Verifie AVANT is_dir()/is_dir() derefe silencieusement un lien
+            # symbolique ou un reparse point (jonction NTFS, placeholder
+            # OneDrive/iCloud) vers son cible reel : un lien-fichier passait
+            # jusqu'ici tel un fichier ordinaire, et shutil.move() aurait pu
+            # deplacer/supprimer le contenu POINTE (potentiellement hors du
+            # dossier Telechargements) au lieu du simple lien (audit
+            # 2026-07-28, finding eleve organizer.py:1105).
+            if entry.is_symlink():
+                result.skipped_symlinks.append(entry)
+                continue
             if entry.is_dir():
                 result.skipped_dirs.append(entry)
                 continue
@@ -1460,8 +1491,15 @@ class DownloadOrganizer:
                         # source ; si la copie echoue en cours de route, un fichier partiel/
                         # tronque peut rester a destination alors que la source existe encore.
                         # On le nettoie pour ne pas laisser un fichier corrompu se faire passer
-                        # pour le fichier complet.
-                        if move.source.exists() and move.destination.exists():
+                        # pour le fichier complet. _DestinationAppearedError est exclue : dans
+                        # ce cas le fichier a destination N'EST PAS le notre (course
+                        # inter-volume, cf. _copy_via_temp_file) et le supprimer perdrait les
+                        # donnees d'un tiers.
+                        if (
+                            not isinstance(exc, _DestinationAppearedError)
+                            and move.source.exists()
+                            and move.destination.exists()
+                        ):
                             try:
                                 move.destination.unlink()
                                 entry["error"] += " (fichier partiel nettoye a la destination)"
@@ -1542,7 +1580,13 @@ class DownloadOrganizer:
                 return False, True  # peut etre retente plus tard si le conflit se resout
             else:
                 dst.parent.mkdir(parents=True, exist_ok=True)
-                shutil.move(str(src), str(dst))
+                # copy_function=_copy_via_temp_file (audit 2026-07-28, finding
+                # eleve organizer.py:1545) : execute() passe deja ce garde-fou
+                # anti-troncature a shutil.move (voir plus haut) ; l'annulation
+                # doit beneficier de la meme protection pour un deplacement
+                # inter-volume, sinon un arret brutal pendant la restauration
+                # peut laisser un fichier tronque a l'emplacement d'origine.
+                shutil.move(str(src), str(dst), copy_function=_copy_via_temp_file)
                 entry["status"] = "annule"
                 return True, False
         except OSError:
@@ -1758,6 +1802,8 @@ def _print_plan(result: OrganizeResult) -> None:
         print(f"\n{len(result.excluded)} fichier(s) ignore(s) (exclusion ou non categorise, non ancien).")
     if result.skipped_dirs:
         print(f"{len(result.skipped_dirs)} sous-dossier(s) non parcouru(s) (non geres par cet outil).")
+    if result.skipped_symlinks:
+        print(f"{len(result.skipped_symlinks)} lien(s) symbolique(s) ignore(s) (non geres par cet outil).")
 
 
 def main(argv: Optional[list] = None) -> int:

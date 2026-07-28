@@ -140,8 +140,13 @@ antivirus.
 - **Aucune suppression automatique** : les déplacements ne remplacent jamais
   un fichier déjà présent à la destination (ni à l'aller, ni lors d'une
   annulation) — en cas de conflit, ce fichier est simplement laissé de côté
-  et signalé. Cette garantie est vérifiée par une suite de tests automatisés
-  (voir [Tests](#tests)), pas seulement affirmée.
+  et signalé. Un déplacement sur le même disque est vérifié puis effectué de
+  façon atomique (`os.rename`), sans fenêtre de risque. Un déplacement entre
+  deux disques revérifie l'absence de destination juste avant le renommage
+  final (fenêtre de course résiduelle réduite au strict minimum, pas
+  totalement nulle). Ce comportement est couvert par une suite de tests
+  automatisés (voir [Tests](#tests)), y compris les cas de course
+  inter-volume — pas seulement affirmé.
 - **Rapport de session exportable (HTML)** : après un rangement réel, un
   bouton permet d'exporter un rapport détaillant chaque fichier traité, sa
   destination et la raison du classement — pour vérifier ou auditer ce que

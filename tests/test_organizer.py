@@ -1267,6 +1267,118 @@ class OrganizerTestCase(unittest.TestCase):
         leftovers = [p for p in destination.parent.glob("*") if p != destination]
         self.assertEqual(leftovers, [])
 
+    # -- audit 2026-07-28, findings eleves : TOCTOU inter-volume, symlinks, --
+    # -- copy_function manquant a l'annulation --------------------------------
+
+    def test_copy_via_temp_file_refuses_to_overwrite_destination_appeared_mid_copy(self):
+        # Regression finding eleve organizer.py:311 : simule une destination
+        # qui apparait PENDANT la copie (course inter-volume) - avant le
+        # correctif, os.replace l'aurait ecrasee silencieusement.
+        import unittest.mock as mock
+        source = self.downloads / "source.bin"
+        source.write_bytes(b"contenu source")
+        destination = self.target / "sous_dossier" / "destination.bin"
+        destination.parent.mkdir(parents=True)
+
+        real_copy2 = org.shutil.copy2
+
+        def copy2_then_race(src, dst, *args, **kwargs):
+            # Une destination legitime (un autre processus, un telechargement
+            # concurrent) apparait juste apres la fin de la copie, avant le
+            # renommage final.
+            real_copy2(src, dst, *args, **kwargs)
+            destination.write_bytes(b"fichier legitime apparu entre-temps")
+
+        with mock.patch.object(org.shutil, "copy2", side_effect=copy2_then_race):
+            with self.assertRaises(org._DestinationAppearedError):
+                org._copy_via_temp_file(str(source), str(destination))
+
+        # Le fichier legitime n'a pas ete ecrase.
+        self.assertEqual(destination.read_bytes(), b"fichier legitime apparu entre-temps")
+        # Aucun fichier temporaire orphelin.
+        leftovers = [p for p in destination.parent.glob("*") if p != destination]
+        self.assertEqual(leftovers, [])
+
+    def test_execute_does_not_delete_legitimate_file_on_destination_race(self):
+        # Complement du test ci-dessus au niveau execute() : le nettoyage de
+        # fichier partiel (sur OSError) ne doit PAS supprimer un fichier qui
+        # n'est pas le notre.
+        import unittest.mock as mock
+        self._write("gros.pdf", "contenu original")
+        o = self._organizer()
+        result = o.plan()
+
+        destination = self.target / "Documents" / "PDF" / "gros.pdf"
+
+        def failing_rename(src, dst, *args, **kwargs):
+            raise OSError("simulation : renommage impossible entre deux volumes distincts")
+
+        real_copy2 = org.shutil.copy2
+
+        def copy2_then_race(src, dst, *args, **kwargs):
+            real_copy2(src, dst, *args, **kwargs)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(b"fichier legitime apparu entre-temps")
+
+        with mock.patch.object(org.os, "rename", side_effect=failing_rename), \
+                mock.patch.object(org.shutil, "copy2", side_effect=copy2_then_race):
+            batch = o.execute(result, simulate=False)
+
+        entry = batch["moves"][0]
+        self.assertEqual(entry["status"], "erreur")
+        # Le fichier apparu pendant la course n'a pas ete supprime par le
+        # nettoyage de fichier partiel.
+        self.assertTrue(destination.exists())
+        self.assertEqual(destination.read_bytes(), b"fichier legitime apparu entre-temps")
+
+    def test_plan_skips_symlinks_instead_of_dereferencing_them(self):
+        # Regression finding eleve organizer.py:1105 : un lien symbolique
+        # vers un fichier hors du dossier Telechargements ne doit jamais etre
+        # traite comme un fichier ordinaire (shutil.move deplacerait/
+        # supprimerait alors le contenu POINTE, pas juste le lien).
+        target_file = self.tmp / "hors_downloads.pdf"
+        target_file.write_text("contenu externe")
+        link = self.downloads / "lien.pdf"
+        try:
+            link.symlink_to(target_file)
+        except OSError:
+            self.skipTest("symlinks non supportes sans privilege sur cette machine")
+
+        o = self._organizer()
+        result = o.plan()
+
+        self.assertEqual(result.moves, [])
+        self.assertEqual(len(result.skipped_symlinks), 1)
+        self.assertEqual(result.skipped_symlinks[0], link)
+        # Le fichier cible n'a jamais ete touche.
+        self.assertTrue(target_file.exists())
+        self.assertEqual(target_file.read_text(), "contenu externe")
+
+    def test_undo_inter_volume_uses_copy_function_and_leaves_no_truncated_file(self):
+        # Regression finding eleve organizer.py:1545 : _attempt_restore_entry
+        # utilisait shutil.move() nu, sans le copy_function anti-troncature
+        # qu'utilise execute() - une annulation inter-volume interrompue en
+        # cours de copie aurait pu laisser un fichier tronque a la source
+        # d'origine.
+        import unittest.mock as mock
+        self._write("gros.pdf", "contenu original complet")
+        o = self._organizer()
+        result = o.plan()
+        o.execute(result, simulate=False)
+
+        def failing_rename(src, dst, *args, **kwargs):
+            raise OSError("simulation : renommage impossible entre deux volumes distincts")
+
+        with mock.patch.object(org.os, "rename", side_effect=failing_rename):
+            out = o.undo_last_batch()
+
+        self.assertEqual(len(out["undone"]), 1)
+        restored = self.downloads / "gros.pdf"
+        self.assertTrue(restored.exists())
+        self.assertEqual(restored.read_text(), "contenu original complet")
+        leftovers = list(restored.parent.glob("*.partial*"))
+        self.assertEqual(leftovers, [])
+
     def test_undo_with_malformed_history_entry_does_not_crash(self):
         self._write("a.pdf")
         o = self._organizer()
