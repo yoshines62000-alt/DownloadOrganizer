@@ -160,7 +160,7 @@ class _TreeviewCellTooltip:
         except tk.TclError:
             pass
         ttk.Label(
-            self._tooltip, text=text, background="#ffffe0", foreground="#000000",
+            self._tooltip, text=text, background=opl_theme.couleur("surbrillance"), foreground=opl_theme.couleur("texte"),
             relief="solid", borderwidth=1, padding=(6, 3), wraplength=520, justify="left",
         ).pack()
 
@@ -386,15 +386,15 @@ class OrganizerGUI(tk.Tk):
         # corrige).
         bottom_bar = ttk.Frame(self)
         bottom_bar.pack(fill="x", side="bottom")
-        ttk.Label(bottom_bar, text=f"v{APP_VERSION}", foreground="#666").pack(side="left", padx=(8, 0), pady=4)
+        ttk.Label(bottom_bar, text=f"v{APP_VERSION}", foreground=opl_theme.couleur("texte_doux")).pack(side="left", padx=(8, 0), pady=4)
         self.update_status_var = tk.StringVar(value="")
-        self.update_status_label = ttk.Label(bottom_bar, textvariable=self.update_status_var, foreground="#666")
+        self.update_status_label = ttk.Label(bottom_bar, textvariable=self.update_status_var, foreground=opl_theme.couleur("texte_doux"))
         self.update_status_label.pack(side="left", padx=(6, 0), pady=4)
         self.status_var = tk.StringVar(value="Pret.")
-        ttk.Label(bottom_bar, textvariable=self.status_var, relief="sunken", anchor="w").pack(
+        ttk.Label(bottom_bar, textvariable=self.status_var, style="Statut.TLabel", anchor="w").pack(
             fill="x", side="left", expand=True
         )
-        donate_label = ttk.Label(bottom_bar, text="☕ Soutenir le projet", foreground="#0645AD", cursor="hand2")
+        donate_label = ttk.Label(bottom_bar, text="☕ Soutenir le projet", foreground=opl_theme.couleur("lien"), cursor="hand2")
         donate_label.pack(side="right", padx=8)
         donate_label.bind("<Button-1>", lambda event: webbrowser.open(DONATE_URL))
 
@@ -424,6 +424,26 @@ class OrganizerGUI(tk.Tk):
 
         preview_frame = ttk.Frame(notebook)
         notebook.add(preview_frame, text="Apercu")
+
+        # Barre de recherche : filtre en temps reel les lignes de l'Apercu au
+        # fil de la frappe (insensible a la casse, sur toutes les colonnes).
+        # Les donnees completes restent conservees dans self._preview_rows ;
+        # seul l'affichage est reduit aux lignes correspondantes (voir
+        # _apply_preview_filter). Packee AVANT le Treeview pour rester en haut.
+        preview_search_bar = ttk.Frame(preview_frame)
+        preview_search_bar.pack(fill="x", padx=4, pady=(4, 2))
+        ttk.Label(preview_search_bar, text="Rechercher :").pack(side="left")
+        self._preview_rows = []
+        self.preview_search_var = tk.StringVar(value="")
+        ttk.Entry(preview_search_bar, textvariable=self.preview_search_var).pack(
+            side="left", fill="x", expand=True, padx=(6, 6)
+        )
+        self.preview_count_var = tk.StringVar(value="")
+        ttk.Label(
+            preview_search_bar, textvariable=self.preview_count_var,
+            foreground=opl_theme.couleur("texte_doux"),
+        ).pack(side="right")
+        self.preview_search_var.trace_add("write", lambda *_: self._apply_preview_filter())
 
         columns = ("fichier", "categorie", "destination", "raison")
         self.preview_tree = ttk.Treeview(preview_frame, columns=columns, show="headings", height=15)
@@ -457,11 +477,31 @@ class OrganizerGUI(tk.Tk):
         hist_toolbar = ttk.Frame(history_frame)
         hist_toolbar.pack(fill="x", padx=4, pady=(4, 0))
         self.history_summary_var = tk.StringVar(value="")
-        ttk.Label(hist_toolbar, textvariable=self.history_summary_var, foreground="#555").pack(side="left")
+        ttk.Label(hist_toolbar, textvariable=self.history_summary_var, foreground=opl_theme.couleur("texte_doux")).pack(side="left")
         ttk.Button(hist_toolbar, text="Purger l'historique...", command=self._purge_history_dialog).pack(side="right")
         ttk.Button(hist_toolbar, text="Annuler le lot selectionne...", command=self._undo_selected_batch).pack(
             side="right", padx=(0, 6)
         )
+
+        # Barre de recherche de l'Historique : meme principe que l'Apercu.
+        # Les lignes completes (avec leur iid = index absolu du lot, essentiel
+        # pour l'annulation/le detail) sont conservees dans self._history_rows ;
+        # le filtre ne fait que reafficher le sous-ensemble correspondant sans
+        # jamais perdre les iid (voir _apply_history_filter).
+        hist_search_bar = ttk.Frame(history_frame)
+        hist_search_bar.pack(fill="x", padx=4, pady=(2, 4))
+        ttk.Label(hist_search_bar, text="Rechercher :").pack(side="left")
+        self._history_rows = []
+        self.history_search_var = tk.StringVar(value="")
+        ttk.Entry(hist_search_bar, textvariable=self.history_search_var).pack(
+            side="left", fill="x", expand=True, padx=(6, 6)
+        )
+        self.history_count_var = tk.StringVar(value="")
+        ttk.Label(
+            hist_search_bar, textvariable=self.history_count_var,
+            foreground=opl_theme.couleur("texte_doux"),
+        ).pack(side="right")
+        self.history_search_var.trace_add("write", lambda *_: self._apply_history_filter())
 
         hist_columns = ("date", "mode", "nb", "detail")
         self.history_tree = ttk.Treeview(history_frame, columns=hist_columns, show="headings", height=15)
@@ -552,7 +592,7 @@ class OrganizerGUI(tk.Tk):
             cat_frame,
             text="Un motif de nom (ex: facture*.pdf, Capture*.png) est prioritaire sur l'extension, "
             "y compris celle d'une categorie integree - laissez vide pour un tri par extension seule.",
-            foreground="#666",
+            foreground=opl_theme.couleur("texte_doux"),
         ).grid(row=4, column=0, columnspan=5, sticky="w", pady=(4, 0))
         cat_frame.columnconfigure(1, weight=1)
         cat_frame.columnconfigure(2, weight=1)
@@ -573,7 +613,7 @@ class OrganizerGUI(tk.Tk):
         self.watch_btn = ttk.Button(watch_frame, text="Activer la veille", command=self._toggle_watch)
         self.watch_btn.grid(row=0, column=3, sticky="w", padx=(20, 0))
         self.watch_status_var = tk.StringVar(value="Veille inactive.")
-        ttk.Label(watch_frame, textvariable=self.watch_status_var, foreground="#555").grid(
+        ttk.Label(watch_frame, textvariable=self.watch_status_var, foreground=opl_theme.couleur("texte_doux")).grid(
             row=1, column=0, columnspan=4, sticky="w", pady=(4, 0)
         )
         ttk.Label(
@@ -584,7 +624,7 @@ class OrganizerGUI(tk.Tk):
                 "de nouveaux fichiers sont detectes et stables (plus aucun telechargement en cours)."
             ),
             wraplength=760,
-            foreground="#555",
+            foreground=opl_theme.couleur("texte_doux"),
         ).grid(row=2, column=0, columnspan=4, sticky="w", pady=(2, 0))
 
         # Mises a jour (audit F2) : l'appel reseau de verification (requete
@@ -608,7 +648,7 @@ class OrganizerGUI(tk.Tk):
                 "hors ligne - le reste de l'application fonctionne entierement sans connexion Internet."
             ),
             wraplength=760,
-            foreground="#555",
+            foreground=opl_theme.couleur("texte_doux"),
         ).grid(row=1, column=0, sticky="w", pady=(2, 0))
 
         # L'apercu reste l'onglet actif par defaut a l'ouverture (deja le cas
@@ -634,11 +674,11 @@ class OrganizerGUI(tk.Tk):
         self._update_check_after_id = None
         if status == "update_available":
             self.update_status_var.set(f"Mise a jour disponible : {tag} - Telecharger")
-            self.update_status_label.configure(foreground="#0645AD", cursor="hand2")
+            self.update_status_label.configure(foreground=opl_theme.couleur("lien"), cursor="hand2")
             self.update_status_label.bind("<Button-1>", lambda event: webbrowser.open(RELEASES_URL))
         elif status == "up_to_date":
             self.update_status_var.set("A jour")
-            self.update_status_label.configure(foreground="#1B7A1B", cursor="")
+            self.update_status_label.configure(foreground=opl_theme.couleur("succes"), cursor="")
         # "check_failed" (hors ligne, GitHub inaccessible...) : on ne
         # revendique rien plutot que d'afficher a tort "a jour".
 
@@ -904,9 +944,33 @@ class OrganizerGUI(tk.Tk):
         self.status_var.set(f"Configuration importee depuis {Path(path).name} et enregistree.")
 
     def _fill_preview(self, result):
+        # Conserve la totalite des lignes en memoire ; l'affichage effectif
+        # (eventuellement filtre par la barre de recherche) est delegue a
+        # _apply_preview_filter pour ne jamais dupliquer la logique d'insertion.
+        self._preview_rows = [
+            (move.source.name, move.category, str(move.destination), move.reason)
+            for move in result.moves
+        ]
+        self._apply_preview_filter()
+
+    def _apply_preview_filter(self):
+        """Reaffiche l'Apercu en ne gardant que les lignes correspondant au
+        texte recherche (insensible a la casse, sur n'importe quelle colonne).
+        Champ vide => toutes les lignes."""
+        query = self.preview_search_var.get().strip().lower()
         self.preview_tree.delete(*self.preview_tree.get_children())
-        for move in result.moves:
-            self.preview_tree.insert("", "end", values=(move.source.name, move.category, str(move.destination), move.reason))
+        shown = 0
+        for values in self._preview_rows:
+            if not query or query in " ".join(str(v) for v in values).lower():
+                self.preview_tree.insert("", "end", values=values)
+                shown += 1
+        total = len(self._preview_rows)
+        if total == 0:
+            self.preview_count_var.set("")
+        elif query:
+            self.preview_count_var.set(f"{shown}/{total} resultats")
+        else:
+            self.preview_count_var.set(f"{total} ligne(s)")
 
     def _simulate(self):
         # Garde-fou contre un double-declenchement : le bouton est desactive
@@ -1665,7 +1729,6 @@ class OrganizerGUI(tk.Tk):
     HISTORY_DISPLAY_LIMIT = 200
 
     def _refresh_history_view(self):
-        self.history_tree.delete(*self.history_tree.get_children())
         history = load_history()
         total = len(history)
         # N'affiche que les entrees les plus recentes : au-dela de quelques
@@ -1673,6 +1736,11 @@ class OrganizerGUI(tk.Tk):
         # l'interface pour peu d'interet (l'historique reste consultable en
         # totalite via export/purge, juste pas tout affiche a l'ecran).
         displayed = list(reversed(history))[: self.HISTORY_DISPLAY_LIMIT]
+        # Chaque ligne est memorisee sous forme (iid, values) pour que la barre
+        # de recherche puisse reafficher un sous-ensemble sans jamais perdre
+        # l'iid (index absolu du lot, cf. plus bas) dont dependent l'annulation
+        # et l'affichage du detail.
+        self._history_rows = []
         for offset, batch in enumerate(displayed):
             if batch.get("simulated"):
                 mode = "Simulation"
@@ -1694,15 +1762,32 @@ class OrganizerGUI(tk.Tk):
             # l'affichage etant inverse et tronque a HISTORY_DISPLAY_LIMIT, une
             # position visuelle ne permettrait jamais de retrouver le bon lot
             # au moment d'agir dessus (annulation, detail).
-            self.history_tree.insert(
-                "", "end", iid=str(total - 1 - offset),
-                values=(batch["timestamp"], mode, len(moved), detail),
+            self._history_rows.append(
+                (str(total - 1 - offset), (batch["timestamp"], mode, len(moved), detail))
             )
 
         if total > len(displayed):
             self.history_summary_var.set(f"Affichage des {len(displayed)} lots les plus recents sur {total} au total.")
         else:
             self.history_summary_var.set(f"{total} lot(s) dans l'historique.")
+
+        self._apply_history_filter()
+
+    def _apply_history_filter(self):
+        """Reaffiche l'Historique en ne gardant que les lots correspondant au
+        texte recherche (insensible a la casse, sur n'importe quelle colonne).
+        Les iid sont preserves pour ne pas casser annulation/detail."""
+        query = self.history_search_var.get().strip().lower()
+        self.history_tree.delete(*self.history_tree.get_children())
+        shown = 0
+        for iid, values in self._history_rows:
+            if not query or query in " ".join(str(v) for v in values).lower():
+                self.history_tree.insert("", "end", iid=iid, values=values)
+                shown += 1
+        if query and self._history_rows:
+            self.history_count_var.set(f"{shown}/{len(self._history_rows)} resultats")
+        else:
+            self.history_count_var.set("")
 
     def _purge_history_dialog(self):
         from tkinter import simpledialog

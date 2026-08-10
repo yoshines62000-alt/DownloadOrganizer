@@ -860,6 +860,96 @@ class GuiTestCase(unittest.TestCase):
         self.app.update()
         self.assertTrue(self.app.winfo_exists())
 
+    # -- Recherche/filtre dans les tableaux Apercu et Historique -----------
+
+    def _preview_result(self):
+        return org.OrganizeResult(moves=[
+            org.PlannedMove(
+                source=self.downloads / "rapport_annuel.pdf",
+                destination=self.target / "PDF" / "rapport_annuel.pdf",
+                category="PDF", reason="extension .pdf",
+            ),
+            org.PlannedMove(
+                source=self.downloads / "vacances.jpg",
+                destination=self.target / "Images" / "vacances.jpg",
+                category="Images", reason="extension .jpg",
+            ),
+            org.PlannedMove(
+                source=self.downloads / "archive.zip",
+                destination=self.target / "Archives" / "archive.zip",
+                category="Archives", reason="extension .zip",
+            ),
+        ])
+
+    def _row_values(self, tree):
+        return [tuple(tree.item(iid, "values")) for iid in tree.get_children()]
+
+    def test_preview_search_filters_rows_in_real_time_on_any_column(self):
+        self.app._fill_preview(self._preview_result())
+        self.app.update()
+        self.assertEqual(len(self.app.preview_tree.get_children()), 3)
+
+        # Match sur la colonne "fichier" (insensible a la casse).
+        self.app.preview_search_var.set("VACANCES")
+        self.app.update()
+        rows = self._row_values(self.app.preview_tree)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0][0], "vacances.jpg")
+        self.assertEqual(self.app.preview_count_var.get(), "1/3 resultats")
+
+        # Match sur la colonne "categorie".
+        self.app.preview_search_var.set("images")
+        self.app.update()
+        self.assertEqual(len(self.app.preview_tree.get_children()), 1)
+
+        # Un terme absent ne renvoie aucune ligne.
+        self.app.preview_search_var.set("introuvable-xyz")
+        self.app.update()
+        self.assertEqual(len(self.app.preview_tree.get_children()), 0)
+        self.assertEqual(self.app.preview_count_var.get(), "0/3 resultats")
+
+        # Vider le champ reaffiche tout.
+        self.app.preview_search_var.set("")
+        self.app.update()
+        self.assertEqual(len(self.app.preview_tree.get_children()), 3)
+        self.assertEqual(self.app.preview_count_var.get(), "3 ligne(s)")
+
+    def test_history_search_filters_and_preserves_iids_for_undo(self):
+        for i, cat in enumerate(("Images", "PDF")):
+            org.append_batch_to_history({
+                "timestamp": f"2026-07-2{i} 08:00:00",
+                "simulated": False,
+                "moves": [{
+                    "source": str(self.downloads / f"fichier_{cat}.dat"),
+                    "destination": str(self.target / cat / f"fichier_{cat}.dat"),
+                    "category": cat, "reason": f"extension {cat}", "status": "deplace",
+                }],
+            })
+        self.app._refresh_history_view()
+        self.app.update()
+        self.assertEqual(len(self.app.history_tree.get_children()), 2)
+
+        # iid = index absolu du lot : le second lot ajoute a l'index 1.
+        expected_iid = "1"
+        all_iids = set(self.app.history_tree.get_children())
+        self.assertIn(expected_iid, all_iids)
+
+        # Filtre sur le detail (nom de fichier du lot PDF).
+        self.app.history_search_var.set("fichier_pdf")
+        self.app.update()
+        filtered = self.app.history_tree.get_children()
+        self.assertEqual(len(filtered), 1)
+        # L'iid absolu est preserve malgre le filtrage : indispensable pour que
+        # l'annulation/le detail agissent sur le bon lot.
+        self.assertEqual(filtered[0], expected_iid)
+        self.assertEqual(self.app.history_count_var.get(), "1/2 resultats")
+
+        # Vider reaffiche les deux lots, sans indicateur de resultats.
+        self.app.history_search_var.set("")
+        self.app.update()
+        self.assertEqual(len(self.app.history_tree.get_children()), 2)
+        self.assertEqual(self.app.history_count_var.get(), "")
+
 
 if __name__ == "__main__":
     unittest.main()
