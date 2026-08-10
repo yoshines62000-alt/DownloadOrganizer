@@ -11,7 +11,7 @@ a = Analysis(
     # doit pouvoir relire ce meme fichier depuis le dossier temporaire
     # d'extraction PyInstaller (sys._MEIPASS) au demarrage, d'ou cette entree
     # 'datas' qui le rend accessible a l'execution, pas seulement au build.
-    datas=[('assets/icon.ico', 'assets')],
+    datas=[('opl_assets', 'opl_assets'), ('assets/icon.ico', 'assets')],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},

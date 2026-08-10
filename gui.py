@@ -63,6 +63,8 @@ def _resolve_icon_path() -> "Path | None":
     icon_path = base_dir / "assets" / "icon.ico"
     return icon_path if icon_path.is_file() else None
 
+import opl_theme
+import opl_contact
 import update_checker
 from organizer import (
     DownloadOrganizer,
@@ -191,6 +193,7 @@ class OrganizerGUI(tk.Tk):
         # de _set_app_user_model_id pour la raison de cet ordre.
         _set_app_user_model_id()
         super().__init__()
+        opl_theme.apply(self, "DownloadOrganizer")
         self.title("Nettoyeur intelligent - Telechargements")
         self._apply_window_icon()
         # Taille par defaut mesuree empiriquement pour que les boutons
@@ -205,6 +208,8 @@ class OrganizerGUI(tk.Tk):
         # mise en page horizontale ne perturbe l'agencement vertical.
         self.geometry("1150x850")
         self.minsize(1130, 700)
+
+        opl_theme.entete(self, "Nettoyeur intelligent", "Rangement intelligent des telechargements", on_contact=lambda: opl_contact.ouvrir(self, app="Nettoyeur intelligent", version=APP_VERSION)).pack(fill="x", side="top")
 
         self.config_data = load_config()
         self.organizer = DownloadOrganizer(self.config_data)
