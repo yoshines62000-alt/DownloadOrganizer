@@ -17,7 +17,7 @@ from tkinter import ttk, filedialog, messagebox
 from pathlib import Path
 
 DONATE_URL = "https://ko-fi.com/yoshines62000"
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.1.1"
 UPDATE_REPO = "yoshines62000-alt/DownloadOrganizer"
 RELEASES_URL = f"https://github.com/{UPDATE_REPO}/releases/latest"
 
