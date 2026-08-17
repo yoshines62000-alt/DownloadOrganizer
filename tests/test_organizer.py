@@ -1822,9 +1822,15 @@ class HistoryJsonlTestCase(unittest.TestCase):
         self.addCleanup(self._cleanup)
         self._orig_app_dir = org.APP_DIR
         self._orig_history_file = org.HISTORY_FILE
+        # LOG_FILE doit etre redirige comme APP_DIR/HISTORY_FILE : _setup_logging()
+        # cree APP_DIR (ici le tmp) mais ouvre LOG_FILE, qui restait sinon dans le
+        # vrai ~/.download_organizer. Sur un poste ou ce dossier n'existe pas encore
+        # (profil neuf), tout test qui journalise plantait en FileNotFoundError.
+        self._orig_log_file = org.LOG_FILE
         self._orig_cache = dict(org._history_count_cache)
         org.APP_DIR = self.tmp / "appdata"
         org.HISTORY_FILE = org.APP_DIR / "history.json"
+        org.LOG_FILE = org.APP_DIR / "app.log"
         org._history_count_cache = {"path": None, "count": None}
         for handler in list(org.logger.handlers):
             handler.close()
@@ -1836,6 +1842,7 @@ class HistoryJsonlTestCase(unittest.TestCase):
             org.logger.removeHandler(handler)
         org.APP_DIR = self._orig_app_dir
         org.HISTORY_FILE = self._orig_history_file
+        org.LOG_FILE = self._orig_log_file
         org._history_count_cache = self._orig_cache
 
     def test_append_writes_jsonl_file_not_legacy_json(self):
