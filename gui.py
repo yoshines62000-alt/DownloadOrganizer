@@ -209,7 +209,7 @@ class OrganizerGUI(tk.Tk):
         self.geometry("1150x850")
         self.minsize(1130, 700)
 
-        opl_theme.entete(self, "Nettoyeur intelligent", "Rangement intelligent des telechargements", on_contact=lambda: opl_contact.ouvrir(self, app="Nettoyeur intelligent", version=APP_VERSION)).pack(fill="x", side="top")
+        opl_theme.entete(self, "Nettoyeur intelligent", "Rangement intelligent des telechargements", on_contact=lambda: opl_contact.ouvrir(self, app="Nettoyeur intelligent", version=APP_VERSION), slug="downloadorganizer", version=APP_VERSION).pack(fill="x", side="top")
 
         self.config_data = load_config()
         self.organizer = DownloadOrganizer(self.config_data)
