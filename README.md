@@ -183,6 +183,14 @@ que la vérification de mise à jour décrite ci-dessus (désactivable). La
 configuration, l'historique des déplacements et le journal d'activité
 restent en clair sur votre disque local, dans `~/.download_organizer/`.
 
+## Mes données — lisibles sans l'application
+
+Rien n'est enfermé : la configuration (`~/.download_organizer/config.json`) et
+l'historique des lots (`~/.download_organizer/history.jsonl`, une ligne JSON
+par lot) sont en texte clair. Si un jour l'exécutable refuse de démarrer, ces
+fichiers s'ouvrent dans n'importe quel éditeur — aucun outil de secours n'est
+nécessaire, c'est déjà le format ouvert vers lequel un outil exporterait.
+
 ## Prise en main de l'interface
 
 Que vous lanciez l'exécutable ou le code source, l'interface est la même et
