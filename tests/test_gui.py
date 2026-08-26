@@ -18,6 +18,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import organizer as org
+import opl_theme
 import gui
 
 
@@ -519,7 +520,7 @@ class GuiTestCase(unittest.TestCase):
         # Le notebook (onglets Apercu/Historique) doit avoir une hauteur
         # utile reelle, pas juste sa barre d'onglets ecrasee a quelques px.
         from tkinter import ttk
-        notebooks = [c for c in self.app.winfo_children() if isinstance(c, ttk.Notebook)]
+        notebooks = [c for c in self.app.winfo_children() if isinstance(c, opl_theme.Rail)]
         self.assertEqual(len(notebooks), 1)
         notebook = notebooks[0]
         self.assertTrue(notebook.winfo_ismapped())
@@ -565,7 +566,7 @@ class GuiTestCase(unittest.TestCase):
         )
 
         from tkinter import ttk
-        notebooks = [c for c in self.app.winfo_children() if isinstance(c, ttk.Notebook)]
+        notebooks = [c for c in self.app.winfo_children() if isinstance(c, opl_theme.Rail)]
         self.assertEqual(len(notebooks), 1)
         notebook = notebooks[0]
         tab_texts = [notebook.tab(tab_id, "text") for tab_id in notebook.tabs()]
@@ -598,8 +599,8 @@ class GuiTestCase(unittest.TestCase):
         # parcourir manuellement l'arbre de widgets.
         from tkinter import ttk
         self.assertTrue(hasattr(self.app, "notebook"))
-        self.assertIsInstance(self.app.notebook, ttk.Notebook)
-        notebooks = [c for c in self.app.winfo_children() if isinstance(c, ttk.Notebook)]
+        self.assertIsInstance(self.app.notebook, opl_theme.Rail)
+        notebooks = [c for c in self.app.winfo_children() if isinstance(c, opl_theme.Rail)]
         self.assertEqual(len(notebooks), 1)
         self.assertIs(self.app.notebook, notebooks[0])
         tab_texts = [self.app.notebook.tab(t, "text") for t in self.app.notebook.tabs()]
@@ -620,7 +621,7 @@ class GuiTestCase(unittest.TestCase):
         self.app.update()
 
         from tkinter import ttk
-        notebooks = [c for c in self.app.winfo_children() if isinstance(c, ttk.Notebook)]
+        notebooks = [c for c in self.app.winfo_children() if isinstance(c, opl_theme.Rail)]
         notebook = notebooks[0]
         self.assertTrue(notebook.winfo_ismapped(), "le Notebook Apercu/Historique a disparu a la taille minimale")
         self.assertGreater(

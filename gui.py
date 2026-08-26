@@ -206,8 +206,8 @@ class OrganizerGUI(tk.Tk):
         # restant accessible par ascenseur/redimensionnement. minsize
         # respecte la largeur minimale requise (~1123px) pour eviter que la
         # mise en page horizontale ne perturbe l'agencement vertical.
-        self.geometry("1150x850")
-        self.minsize(1130, 700)
+        self.geometry("1320x850")
+        self.minsize(1300, 700)
 
         opl_theme.entete(self, "Nettoyeur intelligent", "Rangement intelligent des telechargements", on_contact=lambda: opl_contact.ouvrir(self, app="Nettoyeur intelligent", version=APP_VERSION), slug="downloadorganizer", version=APP_VERSION).pack(fill="x", side="top")
 
@@ -411,7 +411,7 @@ class OrganizerGUI(tk.Tk):
         # Notebook - et donc l'apercu/l'historique - reste visible au lieu de
         # disparaitre entierement (avant correctif, le contenu au-dessus du
         # Notebook depassait a lui seul la hauteur minimale de la fenetre).
-        notebook = ttk.Notebook(self)
+        notebook = opl_theme.Rail(self)
         notebook.pack(fill="both", expand=True, padx=10, pady=10)
         # Conserve en attribut d'instance (audit K3) : sans cela, il etait
         # impossible d'acceder au Notebook (ex: changer d'onglet
@@ -1602,8 +1602,8 @@ class OrganizerGUI(tk.Tk):
         # pas du tout visible sans redimensionnement manuel. minsize evite
         # aussi qu'un redimensionnement involontaire ne fasse redisparaitre
         # ces colonnes.
-        dialog.geometry("1000x460")
-        dialog.minsize(1000, 320)
+        dialog.geometry("1170x460")
+        dialog.minsize(1170, 320)
 
         tree_frame = ttk.Frame(dialog)
         tree_frame.pack(fill="both", expand=True, padx=10, pady=(10, 5))
