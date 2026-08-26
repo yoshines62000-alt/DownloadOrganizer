@@ -22,6 +22,8 @@ import opl_theme
 import gui
 
 
+
+
 class GuiTestCase(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())
@@ -85,6 +87,19 @@ class GuiTestCase(unittest.TestCase):
         os.utime(path, (old_time, old_time))
 
     # -- item 2 : l'intervalle de veille est bien collecte/persiste --------
+
+    def test_rien_a_ranger_s_affiche_dans_la_vue_et_n_ouvre_aucune_modale(self):
+        with mock.patch("tkinter.messagebox.showinfo") as modale:
+            self.app._montrer_rien_a_ranger()
+        modale.assert_not_called()
+        self.assertIsNotNone(self.app._etat_vide, "l'etat vide doit occuper la vue")
+
+    def test_l_etat_vide_disparait_des_qu_il_y_a_quelque_chose_a_ranger(self):
+        """Contre-epreuve : sans elle, un etat vide colle passerait."""
+        self.app._montrer_rien_a_ranger()
+        self.assertIsNotNone(self.app._etat_vide)
+        self.app._effacer_etat_vide()
+        self.assertIsNone(self.app._etat_vide)
 
     def test_collect_config_includes_watch_interval(self):
         self.app.watch_interval_var.set("45")
@@ -954,3 +969,4 @@ class GuiTestCase(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

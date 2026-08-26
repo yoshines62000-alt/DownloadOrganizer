@@ -423,6 +423,7 @@ class OrganizerGUI(tk.Tk):
         self.notebook = notebook
 
         preview_frame = ttk.Frame(notebook)
+        self._preview_frame = preview_frame
         notebook.add(preview_frame, text="Apercu")
 
         # Barre de recherche : filtre en temps reel les lignes de l'Apercu au
@@ -948,6 +949,25 @@ class OrganizerGUI(tk.Tk):
         save_config(config)
         self.status_var.set(f"Configuration importee depuis {Path(path).name} et enregistree.")
 
+    def _montrer_rien_a_ranger(self) -> None:
+        """Le dossier est deja range : on le DIT dans la vue, on n'ouvre rien."""
+        self._effacer_etat_vide()
+        self.preview_tree.delete(*self.preview_tree.get_children())
+        cadre = opl_theme.etat_vide(
+            self._preview_frame,
+            "Rien a ranger pour le moment",
+            "Votre dossier Telechargements est deja en ordre : aucun fichier ne "
+            "correspond a une categorie a deplacer. Revenez apres quelques "
+            "telechargements, ou activez la veille pour que ce soit fait tout seul.")
+        cadre.place(relx=0, rely=0, relwidth=1, relheight=1)
+        self._etat_vide = cadre
+
+    def _effacer_etat_vide(self) -> None:
+        cadre = getattr(self, "_etat_vide", None)
+        if cadre is not None:
+            cadre.destroy()
+            self._etat_vide = None
+
     def _fill_preview(self, result):
         # Conserve la totalite des lignes en memoire ; l'affichage effectif
         # (eventuellement filtre par la barre de recherche) est delegue a
@@ -1116,9 +1136,14 @@ class OrganizerGUI(tk.Tk):
                 return
 
             if not result.moves:
-                messagebox.showinfo("Rien a faire", "Aucun fichier a ranger pour le moment.")
+                # Une fenetre modale pour annoncer qu'il ne s'est RIEN passe
+                # est le pire des deux mondes : elle interrompt, elle masque
+                # la vue, et il faut la fermer pour retrouver un ecran vide.
+                # L'information vit desormais dans la vue elle-meme.
+                self._montrer_rien_a_ranger()
                 return
 
+            self._effacer_etat_vide()
             self._fill_preview(result)
 
             duplicates = [m for m in result.moves if m.category == DUPLICATES_TARGET]
