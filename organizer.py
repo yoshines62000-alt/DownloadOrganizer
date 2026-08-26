@@ -238,12 +238,20 @@ DEFAULT_CONFIG = {
 
 def _atomic_write_json(path: Path, data) -> None:
     """Ecrit un fichier JSON de maniere atomique (fichier temporaire + remplacement),
-    pour eviter un fichier tronque/corrompu en cas de crash ou coupure pendant l'ecriture."""
+    pour eviter un fichier tronque/corrompu en cas de crash ou coupure pendant l'ecriture.
+
+    flush() + fsync() AVANT le remplacement : os.replace ne rend atomique que le
+    RENOMMAGE, pas l'arrivee des octets sur le disque. Sans cette paire, une
+    coupure de courant peut laisser le fichier en place, correctement nomme, et
+    VIDE - le pire des trois etats possibles, parce qu'il a l'air valide
+    (constat C9 de l'audit du 2026-08-26)."""
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), prefix=path.stem + ".", suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
+            f.flush()
+            os.fsync(f.fileno())
         os.replace(tmp_name, path)
     except Exception:
         try:
@@ -255,12 +263,16 @@ def _atomic_write_json(path: Path, data) -> None:
 
 def _atomic_write_text(path: Path, text: str) -> None:
     """Equivalent de _atomic_write_json pour du texte brut deja serialise
-    (utilise par l'historique au format JSONL, une ligne = un lot)."""
+    (utilise par l'historique au format JSONL, une ligne = un lot). Meme
+    flush() + fsync() avant remplacement, et pour la meme raison : c'est
+    l'historique qui rend l'annulation possible."""
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), prefix=path.stem + ".", suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
         os.replace(tmp_name, path)
     except Exception:
         try:
