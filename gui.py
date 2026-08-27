@@ -209,7 +209,6 @@ class OrganizerGUI(tk.Tk):
         self.geometry("1320x850")
         self.minsize(1300, 700)
 
-        opl_theme.entete(self, "Nettoyeur intelligent", "Rangement intelligent des telechargements", on_contact=lambda: opl_contact.ouvrir(self, app="Nettoyeur intelligent", version=APP_VERSION), slug="downloadorganizer", version=APP_VERSION).pack(fill="x", side="top")
 
         self.config_data = load_config()
         self.organizer = DownloadOrganizer(self.config_data)
@@ -411,7 +410,12 @@ class OrganizerGUI(tk.Tk):
         # Notebook - et donc l'apercu/l'historique - reste visible au lieu de
         # disparaitre entierement (avant correctif, le contenu au-dessus du
         # Notebook depassait a lui seul la hauteur minimale de la fenetre).
-        notebook = opl_theme.Rail(self)
+        # UNE SEULE COLONNE a gauche : entete() rend le rail lui-meme —
+        # marque en haut, vues au milieu, Theme et Aide en bas.
+        notebook = opl_theme.entete(
+            self, "Nettoyeur intelligent", "Rangement des telechargements",
+            on_contact=lambda: opl_contact.ouvrir(self, app="Nettoyeur intelligent", version=APP_VERSION),
+            slug="downloadorganizer", version=APP_VERSION)
         notebook.pack(fill="both", expand=True, padx=10, pady=10)
         # Conserve en attribut d'instance (audit K3) : sans cela, il etait
         # impossible d'acceder au Notebook (ex: changer d'onglet
