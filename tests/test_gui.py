@@ -24,6 +24,19 @@ import gui
 
 
 
+def _messages(mock_message, ton=None):
+    """Les (titre, texte) passes a opl_theme.message, filtres par ton.
+
+    Les trois messagebox.showinfo/showwarning/showerror sont devenues UN seul
+    appel avec un parametre `ton` : ce helper rend aux tests la granularite
+    qu'ils avaient."""
+    sortie = []
+    for appel in mock_message.call_args_list:
+        if ton is None or appel.kwargs.get("ton") == ton:
+            sortie.append((appel.args[1], appel.args[2]))
+    return sortie
+
+
 class GuiTestCase(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())
@@ -89,7 +102,7 @@ class GuiTestCase(unittest.TestCase):
     # -- item 2 : l'intervalle de veille est bien collecte/persiste --------
 
     def test_rien_a_ranger_s_affiche_dans_la_vue_et_n_ouvre_aucune_modale(self):
-        with mock.patch("tkinter.messagebox.showinfo") as modale:
+        with mock.patch("gui.opl_theme.message") as modale:
             self.app._montrer_rien_a_ranger()
         modale.assert_not_called()
         self.assertIsNotNone(self.app._etat_vide, "l'etat vide doit occuper la vue")
@@ -113,19 +126,19 @@ class GuiTestCase(unittest.TestCase):
         # "Activer la veille" perdait silencieusement la nouvelle valeur,
         # puisque seul _start_watch l'ecrivait auparavant dans config_data.
         self.app.watch_interval_var.set("77")
-        with mock.patch.object(gui, "messagebox") as mocked_messagebox:
+        with mock.patch.object(gui.opl_theme, "message") as mocked_messagebox:
             self.app._save_config()
-            mocked_messagebox.showerror.assert_not_called()
+            self.assertEqual(_messages(mocked_messagebox, "erreur"), [])
 
         reloaded = org.load_config()
         self.assertEqual(reloaded["watch_interval_seconds"], 77)
 
     def test_collect_config_rejects_invalid_watch_interval(self):
         self.app.watch_interval_var.set("2")  # sous le minimum de 5 secondes
-        with mock.patch.object(gui, "messagebox") as mocked_messagebox:
+        with mock.patch.object(gui.opl_theme, "message") as mocked_messagebox:
             config = self.app._collect_config()
             self.assertIsNone(config)
-            mocked_messagebox.showerror.assert_called_once()
+            self.assertEqual(len(_messages(mocked_messagebox, "erreur")), 1)
 
     # -- audit F2 : opt-out de la verification de mise a jour au demarrage --
 
@@ -136,9 +149,9 @@ class GuiTestCase(unittest.TestCase):
 
     def test_unchecking_check_updates_persists_the_opt_out(self):
         self.app.check_updates_var.set(False)
-        with mock.patch.object(gui, "messagebox") as mocked_messagebox:
+        with mock.patch.object(gui.opl_theme, "message") as mocked_messagebox:
             self.app._save_config()
-            mocked_messagebox.showerror.assert_not_called()
+            self.assertEqual(_messages(mocked_messagebox, "erreur"), [])
 
         reloaded = org.load_config()
         self.assertFalse(reloaded["check_for_updates"])
@@ -177,12 +190,12 @@ class GuiTestCase(unittest.TestCase):
 
         shown = {}
 
-        def fake_showinfo(title, message, **kwargs):
+        def fake_showinfo(parent, title, message, **kwargs):
             shown["title"] = title
             shown["message"] = message
 
         with mock.patch.object(org.DownloadOrganizer, "scan_stale_review_folders", slow_scan), \
-                mock.patch.object(gui.messagebox, "showinfo", side_effect=fake_showinfo):
+                mock.patch.object(gui.opl_theme, "message", side_effect=fake_showinfo):
             start = time.perf_counter()
             self.app._check_stale_review_folders()
             elapsed = time.perf_counter() - start
@@ -208,7 +221,7 @@ class GuiTestCase(unittest.TestCase):
         def fake_showinfo(*args, **kwargs):
             shown["called"] = True
 
-        with mock.patch.object(gui.messagebox, "showinfo", side_effect=fake_showinfo):
+        with mock.patch.object(gui.opl_theme, "message", side_effect=fake_showinfo):
             self.app._check_stale_review_folders()
             deadline = time.time() + 1.5
             while time.time() < deadline:
@@ -224,7 +237,7 @@ class GuiTestCase(unittest.TestCase):
             raise RuntimeError("panne simulee")
 
         with mock.patch.object(org.DownloadOrganizer, "scan_stale_review_folders", failing_scan), \
-                mock.patch.object(gui.messagebox, "showinfo") as mocked_showinfo:
+                mock.patch.object(gui.opl_theme, "message") as mocked_showinfo:
             self.app._check_stale_review_folders()
             deadline = time.time() + 1.5
             while time.time() < deadline:
@@ -261,7 +274,7 @@ class GuiTestCase(unittest.TestCase):
         (self.downloads / "photo.jpg").write_bytes(b"x" * 100)
 
         with mock.patch.object(org.DownloadOrganizer, "plan", self._make_slow_plan(0.5)), \
-                mock.patch.object(gui, "messagebox") as mocked_messagebox:
+                mock.patch.object(gui.opl_theme, "message") as mocked_messagebox:
             start = time.perf_counter()
             self.app._simulate()
             elapsed = time.perf_counter() - start
@@ -279,7 +292,7 @@ class GuiTestCase(unittest.TestCase):
 
             finished = self._pump_until(lambda: not self.app._busy)
             self.assertTrue(finished, "la simulation ne s'est jamais terminee")
-            mocked_messagebox.showerror.assert_not_called()
+            self.assertEqual(_messages(mocked_messagebox, "erreur"), [])
 
         self.assertEqual(str(self.app.simulate_btn.cget("state")), "normal")
         self.assertEqual(str(self.app.run_btn.cget("state")), "normal")
@@ -313,7 +326,7 @@ class GuiTestCase(unittest.TestCase):
         (self.downloads / "photo.jpg").write_bytes(b"x" * 100)
 
         with mock.patch.object(org.DownloadOrganizer, "plan", self._make_slow_plan(0.5)), \
-                mock.patch.object(gui, "messagebox") as mocked_messagebox,                 mock.patch.object(gui.opl_theme, "dialogue", return_value=True):
+                mock.patch.object(gui.opl_theme, "message") as mocked_messagebox,                 mock.patch.object(gui.opl_theme, "dialogue", return_value=True):
             start = time.perf_counter()
             self.app._run_real()
             elapsed = time.perf_counter() - start
@@ -325,7 +338,7 @@ class GuiTestCase(unittest.TestCase):
 
             finished = self._pump_until(lambda: not self.app._busy)
             self.assertTrue(finished, "le rangement reel ne s'est jamais termine")
-            mocked_messagebox.showerror.assert_not_called()
+            self.assertEqual(_messages(mocked_messagebox, "erreur"), [])
 
         self.assertEqual(str(self.app.run_btn.cget("state")), "normal")
         self.assertEqual(str(self.app.simulate_btn.cget("state")), "normal")
@@ -417,10 +430,10 @@ class GuiTestCase(unittest.TestCase):
                 self.app._watch_busy = False
 
         # Une fois le cycle de veille termine, le meme appel fonctionne a nouveau.
-        with mock.patch.object(gui, "messagebox") as mocked_messagebox:
+        with mock.patch.object(gui.opl_theme, "message") as mocked_messagebox:
             self.app._simulate()
             self.assertTrue(self._pump_until(lambda: not self.app._busy))
-            mocked_messagebox.showerror.assert_not_called()
+            self.assertEqual(_messages(mocked_messagebox, "erreur"), [])
         self.assertEqual(len(self.app.preview_tree.get_children()), 1)
 
     def test_run_real_is_deferred_while_a_watch_cycle_is_busy(self):
@@ -479,7 +492,7 @@ class GuiTestCase(unittest.TestCase):
 
         with mock.patch.object(org.DownloadOrganizer, "execute", slow_execute), \
                 mock.patch.object(org.DownloadOrganizer, "plan", counting_plan), \
-                mock.patch.object(gui, "messagebox") as mocked_messagebox,                 mock.patch.object(gui.opl_theme, "dialogue", return_value=True):
+                mock.patch.object(gui.opl_theme, "message") as mocked_messagebox,                 mock.patch.object(gui.opl_theme, "dialogue", return_value=True):
 
             # Comme le ferait _watch_tick apres confirmation de l'utilisateur :
             # positionne _watch_busy et demarre execute() sur un thread de fond.

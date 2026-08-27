@@ -820,10 +820,10 @@ class OrganizerGUI(tk.Tk):
             if age_days < 1:
                 raise ValueError
         except ValueError:
-            messagebox.showerror(
-                "Valeur invalide",
+            opl_theme.message(
+                self, "Valeur invalide",
                 "Le champ 'Anciennete (jours)' doit contenir un nombre entier positif.",
-            )
+                ton="erreur")
             return None
 
         try:
@@ -831,10 +831,10 @@ class OrganizerGUI(tk.Tk):
             if watch_interval < 5:
                 raise ValueError
         except ValueError:
-            messagebox.showerror(
-                "Valeur invalide",
+            opl_theme.message(
+                self, "Valeur invalide",
                 "L'intervalle de veille doit etre un nombre entier d'au moins 5 secondes.",
-            )
+                ton="erreur")
             return None
 
         self.config_data["downloads_dir"] = self.downloads_var.get().strip()
@@ -894,15 +894,16 @@ class OrganizerGUI(tk.Tk):
         ]
         name_patterns = [p.strip() for p in self.new_category_patterns_var.get().split(",") if p.strip()]
         if not name or not target or not extensions:
-            messagebox.showwarning(
-                "Categorie invalide", "Le nom, les extensions et le dossier cible sont tous obligatoires.",
-            )
+            opl_theme.message(
+                self, "Categorie invalide",
+                "Le nom, les extensions et le dossier cible sont tous obligatoires.",
+                ton="alerte")
             return
         if name in DEFAULT_CATEGORIES or any(c.get("name") == name for c in self.custom_categories):
-            messagebox.showwarning(
-                "Categorie invalide",
+            opl_theme.message(
+                self, "Categorie invalide",
                 f"'{name}' est deja utilise (categorie integree ou deja ajoutee). Choisissez un autre nom.",
-            )
+                ton="alerte")
             return
         self.custom_categories.append({
             "name": name, "extensions": extensions, "target": target, "name_patterns": name_patterns,
@@ -916,7 +917,10 @@ class OrganizerGUI(tk.Tk):
     def _remove_custom_category(self):
         selection = self.categories_tree.selection()
         if not selection:
-            messagebox.showinfo("Supprimer une categorie", "Selectionnez une categorie d'abord.")
+            opl_theme.message(
+                self, "Supprimer une categorie",
+                "Selectionnez une categorie d'abord.",
+                ton="info")
             return
         del self.custom_categories[int(selection[0])]
         self._refresh_categories_tree()
@@ -934,7 +938,10 @@ class OrganizerGUI(tk.Tk):
         try:
             export_config(config, Path(path))
         except OSError as exc:
-            messagebox.showerror("Erreur", f"Impossible d'exporter la configuration : {exc}")
+            opl_theme.message(
+                self, "Erreur",
+                f"Impossible d'exporter la configuration : {exc}",
+                ton="erreur")
             return
         self.status_var.set(f"Configuration exportee : {path}")
 
@@ -947,7 +954,10 @@ class OrganizerGUI(tk.Tk):
         try:
             config = import_config(Path(path))
         except (json.JSONDecodeError, ValueError, OSError) as exc:
-            messagebox.showerror("Erreur", f"Impossible d'importer cette configuration : {exc}")
+            opl_theme.message(
+                self, "Erreur",
+                f"Impossible d'importer cette configuration : {exc}",
+                ton="erreur")
             return
         self._apply_config_to_ui(config)
         save_config(config)
@@ -1066,7 +1076,10 @@ class OrganizerGUI(tk.Tk):
         def on_success(result):
             self._set_busy(False)
             if result.errors:
-                messagebox.showerror("Erreur", "\n".join(f"{p}: {e}" for p, e in result.errors))
+                opl_theme.message(
+                    self, "Erreur",
+                    "\n".join(f"{p}: {e}" for p, e in result.errors),
+                    ton="erreur")
                 return
             self._fill_preview(result)
             duplicates = [m for m in result.moves if m.category == DUPLICATES_TARGET]
@@ -1084,7 +1097,10 @@ class OrganizerGUI(tk.Tk):
 
         def on_error(exc):
             self._set_busy(False)
-            messagebox.showerror("Erreur", f"La simulation a echoue : {exc}")
+            opl_theme.message(
+                self, "Erreur",
+                f"La simulation a echoue : {exc}",
+                ton="erreur")
 
         self._run_worker(
             work, on_success, on_error,
@@ -1136,7 +1152,10 @@ class OrganizerGUI(tk.Tk):
         def on_plan_success(result):
             self._set_busy(False)
             if result.errors:
-                messagebox.showerror("Erreur", "\n".join(f"{p}: {e}" for p, e in result.errors))
+                opl_theme.message(
+                    self, "Erreur",
+                    "\n".join(f"{p}: {e}" for p, e in result.errors),
+                    ton="erreur")
                 return
 
             if not result.moves:
@@ -1188,22 +1207,25 @@ class OrganizerGUI(tk.Tk):
                 self.export_btn.configure(state="normal")
                 self.status_var.set(f"{len(moved)} fichier(s) deplace(s), {len(errors)} erreur(s).")
                 if errors:
-                    messagebox.showwarning(
-                        "Terminee avec des erreurs",
+                    opl_theme.message(
+                        self, "Terminee avec des erreurs",
                         "\n".join(f"{e['source']}: {e.get('error', '')}" for e in errors),
-                    )
+                        ton="alerte")
                 if batch.get("history_error"):
-                    messagebox.showwarning(
-                        "Historique non enregistre",
+                    opl_theme.message(
+                        self, "Historique non enregistre",
                         "Les fichiers ont bien ete deplaces, mais l'historique n'a pas pu etre "
                         f"enregistre ({batch['history_error']}) : l'annulation ne sera pas "
                         "disponible pour ce lot.",
-                    )
+                        ton="alerte")
                 self._refresh_history_view()
 
             def on_execute_error(exc):
                 self._set_busy(False)
-                messagebox.showerror("Erreur", f"Le rangement a echoue : {exc}")
+                opl_theme.message(
+                    self, "Erreur",
+                    f"Le rangement a echoue : {exc}",
+                    ton="erreur")
 
             self._run_worker(
                 execute_work, on_execute_success, on_execute_error,
@@ -1213,7 +1235,10 @@ class OrganizerGUI(tk.Tk):
 
         def on_plan_error(exc):
             self._set_busy(False)
-            messagebox.showerror("Erreur", f"L'analyse a echoue : {exc}")
+            opl_theme.message(
+                self, "Erreur",
+                f"L'analyse a echoue : {exc}",
+                ton="erreur")
 
         self._run_worker(
             plan_work, on_plan_success, on_plan_error,
@@ -1224,13 +1249,19 @@ class OrganizerGUI(tk.Tk):
     def _open_target_dir(self):
         target = self.base_target_var.get().strip()
         if not target or not Path(target).exists():
-            messagebox.showerror("Dossier introuvable", "Le dossier de destination racine est introuvable.")
+            opl_theme.message(
+                self, "Dossier introuvable",
+                "Le dossier de destination racine est introuvable.",
+                ton="erreur")
             return
         os.startfile(target)  # nosec - ouverture Explorateur Windows d'un dossier local choisi par l'utilisateur
 
     def _export_report(self):
         if not self.last_real_batch:
-            messagebox.showinfo("Aucun rapport", "Effectuez d'abord un rangement reel pour generer un rapport.")
+            opl_theme.message(
+                self, "Aucun rapport",
+                "Effectuez d'abord un rangement reel pour generer un rapport.",
+                ton="info")
             return
         reports_dir = APP_DIR / "reports"
         reports_dir.mkdir(parents=True, exist_ok=True)
@@ -1262,7 +1293,10 @@ class OrganizerGUI(tk.Tk):
             if interval < 5:
                 raise ValueError
         except ValueError:
-            messagebox.showerror("Valeur invalide", "L'intervalle de veille doit etre un nombre entier d'au moins 5 secondes.")
+            opl_theme.message(
+                self, "Valeur invalide",
+                "L'intervalle de veille doit etre un nombre entier d'au moins 5 secondes.",
+                ton="erreur")
             return
         config["watch_interval_seconds"] = interval
         save_config(config)
@@ -1423,17 +1457,17 @@ class OrganizerGUI(tk.Tk):
                 "Surveillance en cours..."
             )
             if errors:
-                messagebox.showwarning(
-                    "Terminee avec des erreurs",
+                opl_theme.message(
+                    self, "Terminee avec des erreurs",
                     "\n".join(f"{e['source']}: {e.get('error', '')}" for e in errors),
-                )
+                    ton="alerte")
             if batch.get("history_error"):
-                messagebox.showwarning(
-                    "Historique non enregistre",
+                opl_theme.message(
+                    self, "Historique non enregistre",
                     "Les fichiers ont bien ete deplaces, mais l'historique n'a pas pu etre "
                     f"enregistre ({batch['history_error']}) : l'annulation ne sera pas "
                     "disponible pour ce lot.",
-                )
+                    ton="alerte")
             self._refresh_history_view()
             self._schedule_next_watch_tick()
 
@@ -1504,11 +1538,11 @@ class OrganizerGUI(tk.Tk):
                 f"- {labels.get(entry['folder'], entry['folder'])} : {entry['count']} fichier(s) "
                 f"({size_mo:.1f} Mo)"
             )
-        messagebox.showinfo(
-            "Fichiers a trier",
+        opl_theme.message(
+            self, "Fichiers a trier",
             "Ces dossiers contiennent des fichiers anciens a trier manuellement "
             "(aucune suppression automatique n'est effectuee) :\n\n" + "\n".join(lines),
-        )
+            ton="info")
 
     def _on_close(self):
         self._stop_watch()
@@ -1567,7 +1601,10 @@ class OrganizerGUI(tk.Tk):
         errors = out.get("errors", [])
 
         if not undone and not errors:
-            messagebox.showinfo("Rien a annuler", out.get("message", "Aucun lot a annuler."))
+            opl_theme.message(
+                self, "Rien a annuler",
+                out.get("message", "Aucun lot a annuler."),
+                ton="info")
             return
 
         if undone:
@@ -1580,13 +1617,19 @@ class OrganizerGUI(tk.Tk):
 
         self.status_var.set(f"{len(undone)} fichier(s) restaure(s), {len(errors)} erreur(s).")
         if errors:
-            messagebox.showwarning("Annulation partielle", "\n".join(f"{p}: {e}" for p, e in errors))
+            opl_theme.message(
+                self, "Annulation partielle",
+                "\n".join(f"{p}: {e}" for p, e in errors),
+                ton="alerte")
         self._refresh_history_view()
 
     def _undo_selected_batch(self):
         selection = self.history_tree.selection()
         if not selection:
-            messagebox.showinfo("Annuler un lot", "Selectionnez d'abord un lot dans l'historique.")
+            opl_theme.message(
+                self, "Annuler un lot",
+                "Selectionnez d'abord un lot dans l'historique.",
+                ton="info")
             return
         confirm = opl_theme.dialogue(
             self, "Annuler le lot selectionne",
@@ -1618,7 +1661,10 @@ class OrganizerGUI(tk.Tk):
         history = load_history()
         index = int(selection[0])
         if index < 0 or index >= len(history):
-            messagebox.showinfo("Detail du lot", "Ce lot n'existe plus dans l'historique.")
+            opl_theme.message(
+                self, "Detail du lot",
+                "Ce lot n'existe plus dans l'historique.",
+                ton="info")
             return
         batch = history[index]
 
@@ -1716,12 +1762,18 @@ class OrganizerGUI(tk.Tk):
         history = load_history()
         real_batches = [b for b in history if not b.get("simulated") and not b.get("undone")]
         if not real_batches:
-            messagebox.showinfo("Annulation selective", "Aucun lot a annuler.")
+            opl_theme.message(
+                self, "Annulation selective",
+                "Aucun lot a annuler.",
+                ton="info")
             return
         last_batch = real_batches[-1]
         moved_entries = [e for e in last_batch["moves"] if e.get("status") == "deplace"]
         if not moved_entries:
-            messagebox.showinfo("Annulation selective", "Aucun fichier du dernier lot n'est disponible pour annulation.")
+            opl_theme.message(
+                self, "Annulation selective",
+                "Aucun fichier du dernier lot n'est disponible pour annulation.",
+                ton="info")
             return
 
         dialog = tk.Toplevel(self)
@@ -1746,7 +1798,10 @@ class OrganizerGUI(tk.Tk):
         def on_confirm():
             selected_indices = listbox.curselection()
             if not selected_indices:
-                messagebox.showinfo("Annulation selective", "Selectionnez au moins un fichier.")
+                opl_theme.message(
+                    self, "Annulation selective",
+                    "Selectionnez au moins un fichier.",
+                    ton="info")
                 return
             sources = [moved_entries[i]["source"] for i in selected_indices]
             dialog.destroy()
@@ -1758,7 +1813,10 @@ class OrganizerGUI(tk.Tk):
                 self.export_btn.configure(state="disabled")
             self.status_var.set(f"{len(undone)} fichier(s) restaure(s), {len(errors)} erreur(s).")
             if errors:
-                messagebox.showwarning("Annulation partielle", "\n".join(f"{p}: {e}" for p, e in errors))
+                opl_theme.message(
+                    self, "Annulation partielle",
+                    "\n".join(f"{p}: {e}" for p, e in errors),
+                    ton="alerte")
             self._refresh_history_view()
 
         buttons = ttk.Frame(dialog)
@@ -1834,7 +1892,10 @@ class OrganizerGUI(tk.Tk):
 
         total = len(load_history())
         if total == 0:
-            messagebox.showinfo("Purger l'historique", "L'historique est deja vide.")
+            opl_theme.message(
+                self, "Purger l'historique",
+                "L'historique est deja vide.",
+                ton="info")
             return
         keep = simpledialog.askinteger(
             "Purger l'historique",
