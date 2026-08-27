@@ -117,9 +117,9 @@ antivirus.
   - **Annulation sélective** : choisissez, fichier par fichier, lesquels du
     dernier lot remettre en place — les autres restent rangés, disponibles
     pour une annulation ultérieure.
-  - **Annuler le lot sélectionné** (onglet Historique) : annule n'importe
+  - **Annuler le lot sélectionné** (vue Historique) : annule n'importe
     quel lot passé, pas seulement le plus récent.
-- **Détail d'un lot** (double-clic sur une ligne de l'onglet Historique) :
+- **Détail d'un lot** (double-clic sur une ligne de la vue Historique) :
   liste complète des fichiers traités pour ce lot précis (catégorie,
   destination, raison, statut, détail d'une éventuelle erreur), avec un
   bouton pour réexporter le rapport HTML de ce lot en particulier.
@@ -172,7 +172,7 @@ aucune donnée personnelle ni identifiant machine envoyé) pour savoir si une
 nouvelle version est disponible. Un échec (hors ligne, GitHub inaccessible)
 est silencieux et ne bloque jamais l'application. C'est le **seul** flux
 réseau de toute l'application — voir [Vie privée](#vie-privée). Il peut être
-désactivé depuis l'onglet **Réglages avancés → Mises à jour** (case à
+désactivé depuis la vue **Réglages avancés → Mises à jour** (case à
 cocher « Vérifier les mises à jour au démarrage ») pour un usage strictement
 hors ligne/air-gapped.
 
@@ -208,7 +208,7 @@ permet de :
 7. Activer le **Mode Veille** pour une surveillance périodique du dossier,
    avec confirmation groupée avant chaque rangement (voir
    [Fonctionnalités](#fonctionnalités)).
-8. Consulter l'onglet **Historique** pour voir les lots précédents.
+8. Consulter la vue **Historique** pour voir les lots précédents.
 
 ## Lancer depuis le code source
 
