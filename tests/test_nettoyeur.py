@@ -1,4 +1,4 @@
-"""Tests de regression pour organizer.py.
+"""Tests de regression pour nettoyeur.py.
 
 Ces tests verifient en priorite la garantie centrale de l'outil : aucun
 deplacement/annulation ne doit jamais ecraser un fichier existant. Ils
@@ -17,10 +17,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import organizer as org
+import nettoyeur as org
 
 
-class OrganizerTestCase(unittest.TestCase):
+class NettoyeurTestCase(unittest.TestCase):
     def setUp(self):
         import tempfile
         self.tmp = Path(tempfile.mkdtemp())
@@ -64,16 +64,16 @@ class OrganizerTestCase(unittest.TestCase):
         path.write_text(content)
         return path
 
-    def _organizer(self, **overrides):
+    def _nettoyeur(self, **overrides):
         cfg = copy.deepcopy(self.config)
         cfg.update(overrides)
-        return org.DownloadOrganizer(cfg)
+        return org.Nettoyeur(cfg)
 
     # -- garantie centrale : jamais d'ecrasement -------------------------
 
     def test_execute_does_not_overwrite_on_move(self):
         self._write("a.pdf", "original")
-        o = self._organizer()
+        o = self._nettoyeur()
         result = o.plan()
         o.execute(result, simulate=False)
         moved = self.target / "Documents" / "PDF" / "a.pdf"
@@ -82,7 +82,7 @@ class OrganizerTestCase(unittest.TestCase):
 
     def test_undo_does_not_overwrite_new_file(self):
         self._write("a.pdf", "original")
-        o = self._organizer()
+        o = self._nettoyeur()
         result = o.plan()
         o.execute(result, simulate=False)
 
@@ -102,7 +102,7 @@ class OrganizerTestCase(unittest.TestCase):
         # fenetre potentiellement large en Mode Veille), shutil.move
         # l'ecrasait silencieusement.
         self._write("a.pdf", "original")
-        o = self._organizer()
+        o = self._nettoyeur()
         result = o.plan()
 
         dest = result.moves[0].destination
@@ -123,7 +123,7 @@ class OrganizerTestCase(unittest.TestCase):
         for index in range(4):
             self._write(f"doc{index}.pdf")
         (self.downloads / "un_sous_dossier").mkdir()  # aussi compte comme une entree
-        o = self._organizer()
+        o = self._nettoyeur()
         calls = []
         result = o.plan(progress_callback=lambda done, total: calls.append((done, total)))
 
@@ -136,14 +136,14 @@ class OrganizerTestCase(unittest.TestCase):
 
     def test_plan_without_progress_callback_still_works(self):
         self._write("a.pdf")
-        o = self._organizer()
+        o = self._nettoyeur()
         result = o.plan()  # aucune exception meme sans callback (valeur par defaut None)
         self.assertEqual(len(result.moves), 1)
 
     def test_execute_progress_callback_reports_every_move(self):
         for index in range(3):
             self._write(f"doc{index}.pdf", content=f"contenu-{index}")
-        o = self._organizer()
+        o = self._nettoyeur()
         result = o.plan()
         self.assertEqual(len(result.moves), 3)
 
@@ -155,7 +155,7 @@ class OrganizerTestCase(unittest.TestCase):
     def test_execute_simulate_progress_callback_reports_every_move(self):
         for index in range(2):
             self._write(f"doc{index}.pdf")
-        o = self._organizer()
+        o = self._nettoyeur()
         result = o.plan()
         calls = []
         o.execute(result, simulate=True, progress_callback=lambda done, total: calls.append((done, total)))
@@ -169,7 +169,7 @@ class OrganizerTestCase(unittest.TestCase):
         self._write("x.pdf", "un")
         self._write("y.pdf", "deux")
 
-        o = self._organizer()
+        o = self._nettoyeur()
         result = o.plan()
         destinations = [str(m.destination) for m in result.moves]
         self.assertEqual(len(destinations), len(set(destinations)))
@@ -182,7 +182,7 @@ class OrganizerTestCase(unittest.TestCase):
 
     def test_undo_twice_reports_nothing_left(self):
         self._write("a.pdf")
-        o = self._organizer()
+        o = self._nettoyeur()
         result = o.plan()
         o.execute(result, simulate=False)
 
@@ -195,7 +195,7 @@ class OrganizerTestCase(unittest.TestCase):
 
     def test_undo_full_round_trip(self):
         self._write("a.pdf", "contenu")
-        o = self._organizer()
+        o = self._nettoyeur()
         result = o.plan()
         o.execute(result, simulate=False)
         self.assertFalse((self.downloads / "a.pdf").exists())
@@ -207,7 +207,7 @@ class OrganizerTestCase(unittest.TestCase):
     def test_undo_selected_files_restores_only_the_chosen_file(self):
         self._write("a.pdf", "contenu a")
         self._write("b.pdf", "contenu b")
-        o = self._organizer()
+        o = self._nettoyeur()
         result = o.plan()
         o.execute(result, simulate=False)
         self.assertFalse((self.downloads / "a.pdf").exists())
@@ -223,7 +223,7 @@ class OrganizerTestCase(unittest.TestCase):
         # "termine" tant qu'il reste des entrees "deplace").
         self._write("a.pdf", "a")
         self._write("b.pdf", "b")
-        o = self._organizer()
+        o = self._nettoyeur()
         result = o.plan()
         o.execute(result, simulate=False)
 
@@ -236,7 +236,7 @@ class OrganizerTestCase(unittest.TestCase):
 
     def test_undo_selected_files_with_no_matching_source_does_nothing(self):
         self._write("a.pdf", "a")
-        o = self._organizer()
+        o = self._nettoyeur()
         result = o.plan()
         o.execute(result, simulate=False)
         outcome = o.undo_selected_files(["/chemin/qui/nexiste/pas.pdf"])
@@ -247,7 +247,7 @@ class OrganizerTestCase(unittest.TestCase):
 
     def test_undo_batch_at_restores_older_batch_and_leaves_recent_intact(self):
         self._write("a.pdf", "contenu a")
-        o = self._organizer()
+        o = self._nettoyeur()
         o.execute(o.plan(), simulate=False)
         self._write("b.pdf", "contenu b")
         o.execute(o.plan(), simulate=False)
@@ -266,7 +266,7 @@ class OrganizerTestCase(unittest.TestCase):
 
     def test_undo_batch_at_conflict_does_not_overwrite_nor_mark_batch_undone(self):
         self._write("a.pdf", "original")
-        o = self._organizer()
+        o = self._nettoyeur()
         o.execute(o.plan(), simulate=False)
         # Un fichier de meme nom reapparait a la source apres le rangement.
         (self.downloads / "a.pdf").write_text("NOUVEAU FICHIER")
@@ -284,7 +284,7 @@ class OrganizerTestCase(unittest.TestCase):
             "timestamp": "2026-01-01 12:00:00", "simulated": True,
             "moves": [{"source": "x.pdf", "destination": "y/x.pdf", "status": "planifie"}],
         })
-        o = self._organizer()
+        o = self._nettoyeur()
         out = o.undo_batch_at(0)
         self.assertEqual(out["undone"], [])
         self.assertEqual(out["errors"], [])
@@ -292,7 +292,7 @@ class OrganizerTestCase(unittest.TestCase):
 
     def test_undo_batch_at_refuses_already_undone_batch(self):
         self._write("a.pdf", "contenu")
-        o = self._organizer()
+        o = self._nettoyeur()
         o.execute(o.plan(), simulate=False)
         first = o.undo_last_batch()
         self.assertEqual(len(first["undone"]), 1)
@@ -303,7 +303,7 @@ class OrganizerTestCase(unittest.TestCase):
         self.assertIn("deja", out["message"])
 
     def test_undo_batch_at_out_of_range_index_returns_message(self):
-        o = self._organizer()
+        o = self._nettoyeur()
         for bad_index in (-1, 0, 42):
             out = o.undo_batch_at(bad_index)
             self.assertEqual(out["undone"], [])
@@ -313,28 +313,28 @@ class OrganizerTestCase(unittest.TestCase):
     # -- validations de dossiers -------------------------------------------
 
     def test_empty_downloads_dir_is_rejected(self):
-        o = self._organizer(downloads_dir="")
+        o = self._nettoyeur(downloads_dir="")
         result = o.plan()
         self.assertTrue(result.errors)
         self.assertFalse(result.moves)
         self.assertIn("pas renseigne", result.errors[0][1])
 
     def test_missing_downloads_dir_is_rejected(self):
-        o = self._organizer(downloads_dir=str(self.tmp / "n_existe_pas"))
+        o = self._nettoyeur(downloads_dir=str(self.tmp / "n_existe_pas"))
         result = o.plan()
         self.assertTrue(result.errors)
         self.assertFalse(result.moves)
         self.assertIn("introuvable", result.errors[0][1])
 
     def test_empty_base_target_dir_is_rejected(self):
-        o = self._organizer(base_target_dir="")
+        o = self._nettoyeur(base_target_dir="")
         result = o.plan()
         self.assertTrue(result.errors)
         self.assertFalse(result.moves)
         self.assertIn("pas renseigne", result.errors[0][1])
 
     def test_missing_base_target_dir_is_rejected(self):
-        o = self._organizer(base_target_dir=str(self.tmp / "n_existe_pas"))
+        o = self._nettoyeur(base_target_dir=str(self.tmp / "n_existe_pas"))
         result = o.plan()
         self.assertTrue(result.errors)
         self.assertFalse(result.moves)
@@ -342,7 +342,7 @@ class OrganizerTestCase(unittest.TestCase):
 
     def test_downloads_dir_pointing_at_drive_root_is_rejected(self):
         drive_root = Path(self.tmp.anchor)  # ex: "C:\\"
-        o = self._organizer(downloads_dir=str(drive_root))
+        o = self._nettoyeur(downloads_dir=str(drive_root))
         result = o.plan()
         self.assertTrue(result.errors)
         self.assertFalse(result.moves)
@@ -353,7 +353,7 @@ class OrganizerTestCase(unittest.TestCase):
         if not system_root or not Path(system_root).exists():
             self.skipTest("SystemRoot/windir non disponible sur cette machine")
         self._write("a.pdf")
-        o = self._organizer(base_target_dir=system_root)
+        o = self._nettoyeur(base_target_dir=system_root)
         result = o.plan()
         self.assertTrue(result.errors)
         self.assertFalse(result.moves)
@@ -362,7 +362,7 @@ class OrganizerTestCase(unittest.TestCase):
     def test_normal_target_dir_is_not_flagged_as_sensitive(self):
         # Garde-fou contre les faux positifs : le dossier de test normal
         # (sous un dossier temporaire) ne doit jamais etre rejete a tort.
-        self.assertIsNone(org.DownloadOrganizer._is_sensitive_system_path(self.target))
+        self.assertIsNone(org.Nettoyeur._is_sensitive_system_path(self.target))
 
     def test_unreadable_downloads_dir_is_reported_not_crashed(self):
         # Simule un dossier existant mais illisible (permissions refusees,
@@ -370,7 +370,7 @@ class OrganizerTestCase(unittest.TestCase):
         # plutot que de laisser l'exception se propager et planter l'appli.
         import unittest.mock as mock
         self._write("a.pdf")
-        o = self._organizer()
+        o = self._nettoyeur()
         with mock.patch.object(Path, "iterdir", side_effect=OSError("Acces refuse")):
             result = o.plan()
         self.assertTrue(result.errors)
@@ -379,7 +379,7 @@ class OrganizerTestCase(unittest.TestCase):
     def test_subdirectories_are_reported_not_silently_dropped(self):
         (self.downloads / "un_sous_dossier").mkdir()
         self._write("a.pdf")
-        o = self._organizer()
+        o = self._nettoyeur()
         result = o.plan()
         self.assertEqual(len(result.skipped_dirs), 1)
         self.assertEqual(result.skipped_dirs[0].name, "un_sous_dossier")
@@ -389,7 +389,7 @@ class OrganizerTestCase(unittest.TestCase):
     def test_duplicate_within_same_batch_is_routed_to_doublons(self):
         self._write("rapport.pdf", "contenu identique")
         self._write("rapport (1).pdf", "contenu identique")
-        o = self._organizer()
+        o = self._nettoyeur()
         result = o.plan()
 
         categories = sorted(m.category for m in result.moves)
@@ -403,7 +403,7 @@ class OrganizerTestCase(unittest.TestCase):
 
     def test_same_name_different_content_is_not_a_duplicate(self):
         self._write("a.pdf", "contenu A")
-        o = self._organizer()
+        o = self._nettoyeur()
         result = o.plan()
         o.execute(result, simulate=False)
 
@@ -416,7 +416,7 @@ class OrganizerTestCase(unittest.TestCase):
 
     def test_duplicate_of_already_organized_file_is_routed_to_doublons(self):
         self._write("a.pdf", "contenu identique")
-        o = self._organizer()
+        o = self._nettoyeur()
         result = o.plan()
         o.execute(result, simulate=False)
         self.assertTrue((self.target / "Documents" / "PDF" / "a.pdf").exists())
@@ -437,7 +437,7 @@ class OrganizerTestCase(unittest.TestCase):
         self._write("x.pdf", "meme contenu")
         self._write("y.pdf", "meme contenu")
         self._write("z.pdf", "meme contenu")
-        o = self._organizer()
+        o = self._nettoyeur()
         result = o.plan()
         keepers = [m for m in result.moves if m.category == "PDF"]
         duplicates = [m for m in result.moves if m.category == "Doublons"]
@@ -450,7 +450,7 @@ class OrganizerTestCase(unittest.TestCase):
         # detection de doublon par taille seule.
         self._write("a.pdf", "AAAA")
         self._write("b.pdf", "BBBB")
-        o = self._organizer()
+        o = self._nettoyeur()
         result = o.plan()
         self.assertEqual(len(result.moves), 2)
         self.assertTrue(all(m.category == "PDF" for m in result.moves))
@@ -465,7 +465,7 @@ class OrganizerTestCase(unittest.TestCase):
     def test_exe_renamed_as_pdf_is_flagged_for_review(self):
         # En-tete MZ (executable Windows) mais extension .pdf : incoherence.
         self._write_bytes("facture.pdf", b"MZ" + b"\x00" * 62)
-        o = self._organizer()
+        o = self._nettoyeur()
         result = o.plan()
         self.assertEqual(len(result.moves), 1)
         self.assertEqual(result.moves[0].category, "A verifier")
@@ -474,7 +474,7 @@ class OrganizerTestCase(unittest.TestCase):
 
     def test_unknown_extension_recognized_by_signature(self):
         self._write_bytes("mystere.download2", b"%PDF-1.7\n%content")
-        o = self._organizer()
+        o = self._nettoyeur()
         result = o.plan()
         self.assertEqual(len(result.moves), 1)
         self.assertEqual(result.moves[0].category, "PDF")
@@ -482,7 +482,7 @@ class OrganizerTestCase(unittest.TestCase):
 
     def test_matching_extension_and_signature_is_not_flagged(self):
         self._write_bytes("photo.jpg", b"\xff\xd8\xff\xe0" + b"\x00" * 60)
-        o = self._organizer()
+        o = self._nettoyeur()
         result = o.plan()
         self.assertEqual(len(result.moves), 1)
         self.assertEqual(result.moves[0].category, "Images")
@@ -492,7 +492,7 @@ class OrganizerTestCase(unittest.TestCase):
         # Un .apk est techniquement un conteneur ZIP : ce n'est pas une
         # incoherence a signaler, c'est le format normal de cet installateur.
         self._write_bytes("appli.apk", b"PK\x03\x04" + b"\x00" * 60)
-        o = self._organizer()
+        o = self._nettoyeur()
         result = o.plan()
         self.assertEqual(len(result.moves), 1)
         self.assertEqual(result.moves[0].category, "Installateurs")
@@ -504,7 +504,7 @@ class OrganizerTestCase(unittest.TestCase):
         old_time = time.time() - 200 * 86400
         f = self._write_bytes("document.docx", b"PK\x03\x04" + b"\x00" * 60)
         os.utime(f, (old_time, old_time))
-        o = self._organizer()
+        o = self._nettoyeur()
         result = o.plan()
         self.assertEqual(len(result.moves), 1)
         self.assertEqual(result.moves[0].category, "A verifier")
@@ -516,7 +516,7 @@ class OrganizerTestCase(unittest.TestCase):
         # que le cas ou la signature detectee est bien "Archives" (un vrai
         # document bureautique), pas n'importe quelle signature.
         self._write_bytes("cv_candidat.docx", b"MZ" + b"\x00" * 62)
-        o = self._organizer()
+        o = self._nettoyeur()
         result = o.plan()
         self.assertEqual(len(result.moves), 1)
         self.assertEqual(result.moves[0].category, "A verifier")
@@ -529,7 +529,7 @@ class OrganizerTestCase(unittest.TestCase):
         # cible sur les extensions sans categorie connue (docx/xlsx/...) ne
         # doit rien changer ici.
         self._write_bytes("appli.apk", b"MZ" + b"\x00" * 62)
-        o = self._organizer()
+        o = self._nettoyeur()
         result = o.plan()
         self.assertEqual(len(result.moves), 1)
         self.assertEqual(result.moves[0].category, "Installateurs")
@@ -537,7 +537,7 @@ class OrganizerTestCase(unittest.TestCase):
     def test_msix_zip_signature_is_not_falsely_flagged(self):
         # Comme .apk, .msix est un conteneur ZIP legitime pour un installateur.
         self._write_bytes("appli.msix", b"PK\x03\x04" + b"\x00" * 60)
-        o = self._organizer()
+        o = self._nettoyeur()
         result = o.plan()
         self.assertEqual(len(result.moves), 1)
         self.assertEqual(result.moves[0].category, "Installateurs")
@@ -552,7 +552,7 @@ class OrganizerTestCase(unittest.TestCase):
         # branche "extension inconnue" qui, elle, la consultait deja - voir
         # test_docx_zip_signature_not_misfiled_as_archive pour le cas sans
         # categorie personnalisee).
-        o = self._organizer(custom_categories=[
+        o = self._nettoyeur(custom_categories=[
             {"name": "DocumentsOffice", "extensions": [".docx", ".xlsx"], "target": "Documents/Office"},
         ])
         self._write_bytes("rapport_reel.docx", b"PK\x03\x04" + b"\x00" * 60)
@@ -563,7 +563,7 @@ class OrganizerTestCase(unittest.TestCase):
         self.assertEqual(result.moves[0].destination.parent, self.target / "Documents" / "Office")
 
     def test_custom_category_with_xlsx_extension_is_not_falsely_flagged(self):
-        o = self._organizer(custom_categories=[
+        o = self._nettoyeur(custom_categories=[
             {"name": "DocumentsOffice", "extensions": [".docx", ".xlsx"], "target": "Documents/Office"},
         ])
         self._write_bytes("budget_reel.xlsx", b"PK\x03\x04" + b"\x00" * 60)
@@ -573,7 +573,7 @@ class OrganizerTestCase(unittest.TestCase):
         self.assertNotIn("incoherente", result.moves[0].reason)
 
     def test_custom_category_with_epub_extension_is_not_falsely_flagged(self):
-        o = self._organizer(custom_categories=[
+        o = self._nettoyeur(custom_categories=[
             {"name": "Lectures", "extensions": [".epub"], "target": "Lectures"},
         ])
         self._write_bytes("roman_reel.epub", b"PK\x03\x04" + b"\x00" * 60)
@@ -588,7 +588,7 @@ class OrganizerTestCase(unittest.TestCase):
         # personnalisee revendique l'extension - seul le cas legitime
         # (signature "Archives") doit etre exempte, pas n'importe quelle
         # signature.
-        o = self._organizer(custom_categories=[
+        o = self._nettoyeur(custom_categories=[
             {"name": "DocumentsOffice", "extensions": [".docx"], "target": "Documents/Office"},
         ])
         self._write_bytes("cv_candidat.docx", b"MZ" + b"\x00" * 62)
@@ -604,7 +604,7 @@ class OrganizerTestCase(unittest.TestCase):
         # a aucune signature connue.
         self._write_bytes("vide.inconnu", b"")
         self._write_bytes("court.inconnu2", b"XY")
-        o = self._organizer()
+        o = self._nettoyeur()
         result = o.plan()  # ne doit lever aucune exception
         # Ni l'un ni l'autre n'a de signature/extension reconnue et ils ne
         # sont pas assez vieux : ils tombent dans "excluded", pas un crash.
@@ -615,7 +615,7 @@ class OrganizerTestCase(unittest.TestCase):
 
     def test_extension_exclusion_without_leading_dot_still_works(self):
         self._write("note.tmp")
-        o = self._organizer(exclusions={"extensions": ["tmp"], "filenames": [], "patterns": []})
+        o = self._nettoyeur(exclusions={"extensions": ["tmp"], "filenames": [], "patterns": []})
         result = o.plan()
         self.assertEqual(len(result.moves), 0)
         self.assertEqual(len(result.excluded), 1)
@@ -624,7 +624,7 @@ class OrganizerTestCase(unittest.TestCase):
         old_time = time.time() - 200 * 86400
         f = self._write("desktop.ini")
         os.utime(f, (old_time, old_time))
-        o = self._organizer(exclusions={"extensions": [], "filenames": [], "patterns": []})
+        o = self._nettoyeur(exclusions={"extensions": [], "filenames": [], "patterns": []})
         result = o.plan()
         self.assertEqual(len(result.moves), 0)
 
@@ -638,14 +638,14 @@ class OrganizerTestCase(unittest.TestCase):
         for name in names:
             f = self._write(name)
             os.utime(f, (old_time, old_time))
-        o = self._organizer(exclusions={"extensions": [], "filenames": [], "patterns": []})
+        o = self._nettoyeur(exclusions={"extensions": [], "filenames": [], "patterns": []})
         result = o.plan()
         self.assertEqual(len(result.moves), 0)
         self.assertEqual(len(result.excluded), len(names))
 
     def test_filename_exclusion_is_case_insensitive(self):
         self._write("Rapport.pdf")
-        o = self._organizer(exclusions={"extensions": [], "filenames": ["rapport.pdf"], "patterns": []})
+        o = self._nettoyeur(exclusions={"extensions": [], "filenames": ["rapport.pdf"], "patterns": []})
         result = o.plan()
         self.assertEqual(len(result.moves), 0)
 
@@ -756,7 +756,7 @@ class OrganizerTestCase(unittest.TestCase):
         names = ("film.mp4", "serie.mkv", "clip.avi", "vieux.wmv", "web.webm", "quicktime.mov")
         for index, name in enumerate(names):
             self._write(name, content=f"contenu-{index}")
-        o = self._organizer()
+        o = self._nettoyeur()
         result = o.plan()
         by_name = {Path(m.source).name: m for m in result.moves}
         for name in names:
@@ -767,7 +767,7 @@ class OrganizerTestCase(unittest.TestCase):
         names = ("chanson.mp3", "album.flac", "voix.wav", "piste.aac", "son.ogg", "vieux.wma", "livre.m4a")
         for index, name in enumerate(names):
             self._write(name, content=f"contenu-{index}")
-        o = self._organizer()
+        o = self._nettoyeur()
         result = o.plan()
         by_name = {Path(m.source).name: m for m in result.moves}
         for name in names:
@@ -779,7 +779,7 @@ class OrganizerTestCase(unittest.TestCase):
         # aucune categorie integree (contrairement a ".mp3"/".flac", desormais
         # couvertes par la categorie integree "Audio" - voir
         # test_builtin_category_extension_always_wins_over_custom_category).
-        o = self._organizer(custom_categories=[
+        o = self._nettoyeur(custom_categories=[
             {"name": "Musique", "extensions": [".mid", ".xm"], "target": "Musique"},
         ])
         self._write("chanson.mid")
@@ -792,7 +792,7 @@ class OrganizerTestCase(unittest.TestCase):
         # "PDF" est deja une categorie integree avec sa propre detection de
         # signature - une categorie personnalisee du meme nom est ignoree
         # plutot que de silencieusement remplacer le comportement integre.
-        o = self._organizer(custom_categories=[
+        o = self._nettoyeur(custom_categories=[
             {"name": "PDF", "extensions": [".weird"], "target": "Autre"},
         ])
         self.assertEqual(o.categories["PDF"]["target"], org.DEFAULT_CATEGORIES["PDF"]["target"])
@@ -802,7 +802,7 @@ class OrganizerTestCase(unittest.TestCase):
         # Un ".pdf" doit toujours suivre la detection integree (signature +
         # categorie "PDF"), meme si une categorie personnalisee tente de
         # reclamer la meme extension.
-        o = self._organizer(custom_categories=[
+        o = self._nettoyeur(custom_categories=[
             {"name": "AutrePDF", "extensions": [".pdf"], "target": "AutrePDF"},
         ])
         self._write("doc.pdf", "%PDF-1.4 contenu")
@@ -811,7 +811,7 @@ class OrganizerTestCase(unittest.TestCase):
         self.assertEqual(moved[0].category, "PDF")
 
     def test_custom_category_name_pattern_routes_by_filename(self):
-        o = self._organizer(custom_categories=[
+        o = self._nettoyeur(custom_categories=[
             {"name": "Factures", "extensions": [".pdf"], "target": "Factures", "name_patterns": ["facture*.pdf"]},
         ])
         self._write("facture_juillet.pdf", "%PDF-1.4 contenu")
@@ -825,7 +825,7 @@ class OrganizerTestCase(unittest.TestCase):
         # A la difference d'une categorie personnalisee par EXTENSION (qui
         # perd toujours face a une categorie integree), un motif de nom est
         # une regle plus specifique et doit l'emporter meme sur PDF.
-        o = self._organizer(custom_categories=[
+        o = self._nettoyeur(custom_categories=[
             {"name": "Factures", "extensions": [".pdf"], "target": "Factures", "name_patterns": ["facture*.pdf"]},
         ])
         self._write("facture_aout.pdf", "%PDF-1.4 contenu facture")
@@ -842,7 +842,7 @@ class OrganizerTestCase(unittest.TestCase):
         # nom de la categorie ("Factures") ne correspond pas au nom "PDF"
         # detecte par signature - il n'y a ici aucune incoherence REELLE
         # (le contenu est bien un PDF), seul le nom de la categorie differe.
-        o = self._organizer(custom_categories=[
+        o = self._nettoyeur(custom_categories=[
             {"name": "Factures", "extensions": [".pdf"], "target": "Factures", "name_patterns": ["facture*.pdf"]},
         ])
         self._write("facture_2026.pdf", "%PDF-1.4 vrai contenu pdf")
@@ -859,7 +859,7 @@ class OrganizerTestCase(unittest.TestCase):
         # extension/signature existe pour detecter. Le motif de nom ne doit
         # jamais dispenser de cette verification quand une incoherence
         # REELLE existe entre l'extension et le contenu.
-        o = self._organizer(custom_categories=[
+        o = self._nettoyeur(custom_categories=[
             {"name": "Factures", "extensions": [".pdf"], "target": "Factures", "name_patterns": ["*.pdf"]},
         ])
         self._write("invoice.pdf", "MZ" + "\x00" * 100)  # signature d'executable Windows (PE), pas un PDF
@@ -870,7 +870,7 @@ class OrganizerTestCase(unittest.TestCase):
         self.assertIn("incoherente", moved[0].reason)
 
     def test_name_pattern_matching_is_case_insensitive(self):
-        o = self._organizer(custom_categories=[
+        o = self._nettoyeur(custom_categories=[
             {"name": "Factures", "extensions": [".pdf"], "target": "Factures", "name_patterns": ["FACTURE*.pdf"]},
         ])
         self._write("Facture_Client.pdf", "%PDF-1.4 contenu")
@@ -881,7 +881,7 @@ class OrganizerTestCase(unittest.TestCase):
     def test_custom_category_without_name_patterns_behaves_exactly_as_before(self):
         # ".mid" plutot que ".mp3" : voir
         # test_custom_category_routes_matching_files_without_code_changes.
-        o = self._organizer(custom_categories=[
+        o = self._nettoyeur(custom_categories=[
             {"name": "Musique", "extensions": [".mid"], "target": "Musique"},
         ])
         self.assertEqual(o.categories["Musique"].get("name_patterns"), [])
@@ -946,7 +946,7 @@ class OrganizerTestCase(unittest.TestCase):
         config["custom_categories"] = [
             {"name": "Evil", "extensions": [".evil"], "target": "/Windows"},
         ]
-        o = self._organizer(custom_categories=config["custom_categories"])
+        o = self._nettoyeur(custom_categories=config["custom_categories"])
         self._write("fichier.evil")
         result = o.plan()
         self.assertEqual(result.moves, [])
@@ -968,31 +968,31 @@ class OrganizerTestCase(unittest.TestCase):
         config["custom_categories"] = [
             {"name": "Musique", "extensions": [".mp3"], "target": "Musique"},
         ]
-        o = self._organizer(base_target_dir=str(sensitive_target), custom_categories=config["custom_categories"])
+        o = self._nettoyeur(base_target_dir=str(sensitive_target), custom_categories=config["custom_categories"])
         # Reroute directement _is_sensitive_system_path pour simuler un
         # dossier cible de categorie qui serait, lui, sensible (sans devoir
         # dependre du vrai C:\Windows de la machine de test).
-        original_check = org.DownloadOrganizer._is_sensitive_system_path
+        original_check = org.Nettoyeur._is_sensitive_system_path
         def fake_check(path):
             if path.name == "Musique":
                 return "un dossier systeme (simule)"
             return original_check(path)
-        org.DownloadOrganizer._is_sensitive_system_path = staticmethod(fake_check)
+        org.Nettoyeur._is_sensitive_system_path = staticmethod(fake_check)
         try:
             self._write("chanson.mp3")
             result = o.plan()
         finally:
-            org.DownloadOrganizer._is_sensitive_system_path = staticmethod(original_check)
+            org.Nettoyeur._is_sensitive_system_path = staticmethod(original_check)
         self.assertEqual(result.moves, [])
         self.assertTrue(result.errors)
         self.assertIn("dossier systeme", result.errors[0][1])
 
     def test_is_within_base_accepts_normal_subdirectories_and_rejects_escapes(self):
         base = self.target
-        self.assertTrue(org.DownloadOrganizer._is_within_base(base / "Documents" / "PDF", base))
-        self.assertTrue(org.DownloadOrganizer._is_within_base(base, base))
-        self.assertFalse(org.DownloadOrganizer._is_within_base(base / ".." / "ailleurs", base))
-        self.assertFalse(org.DownloadOrganizer._is_within_base(Path(base.anchor) / "Windows", base))
+        self.assertTrue(org.Nettoyeur._is_within_base(base / "Documents" / "PDF", base))
+        self.assertTrue(org.Nettoyeur._is_within_base(base, base))
+        self.assertFalse(org.Nettoyeur._is_within_base(base / ".." / "ailleurs", base))
+        self.assertFalse(org.Nettoyeur._is_within_base(Path(base.anchor) / "Windows", base))
 
     def test_purge_history_keeps_only_the_n_most_recent_batches(self):
         for i in range(5):
@@ -1046,7 +1046,7 @@ class OrganizerTestCase(unittest.TestCase):
             self._write("a.pdf")
             self._write("b.pdf")
             self._write("c.pdf")
-            o = self._organizer()
+            o = self._nettoyeur()
             result = o.plan()
             batch = o.execute(result, simulate=False)
 
@@ -1078,7 +1078,7 @@ class OrganizerTestCase(unittest.TestCase):
         # faire perdre le resultat du lot ni planter l'appli.
         import unittest.mock as mock
         self._write("a.pdf")
-        o = self._organizer()
+        o = self._nettoyeur()
         result = o.plan()
         with mock.patch.object(org, "append_batch_to_history", side_effect=OSError("disque plein")):
             batch = o.execute(result, simulate=False)  # ne doit pas lever d'exception
@@ -1103,7 +1103,7 @@ class OrganizerTestCase(unittest.TestCase):
         import unittest.mock as mock
         for index in range(5):
             self._write(f"doc{index}.pdf", content=f"contenu-{index}")
-        o = self._organizer()
+        o = self._nettoyeur()
         result = o.plan()
         self.assertEqual(len(result.moves), 5)
 
@@ -1164,7 +1164,7 @@ class OrganizerTestCase(unittest.TestCase):
         import unittest.mock as mock
         content = "contenu du fichier deplace inter-volume" * 100
         self._write("gros.pdf", content)
-        o = self._organizer()
+        o = self._nettoyeur()
         result = o.plan()
 
         real_rename = org.os.rename
@@ -1201,7 +1201,7 @@ class OrganizerTestCase(unittest.TestCase):
         # dans un etat partiel.
         import unittest.mock as mock
         self._write("gros.pdf", "contenu original complet")
-        o = self._organizer()
+        o = self._nettoyeur()
         result = o.plan()
 
         def failing_rename(src, dst, *args, **kwargs):
@@ -1271,7 +1271,7 @@ class OrganizerTestCase(unittest.TestCase):
     # -- copy_function manquant a l'annulation --------------------------------
 
     def test_copy_via_temp_file_refuses_to_overwrite_destination_appeared_mid_copy(self):
-        # Regression finding eleve organizer.py:311 : simule une destination
+        # Regression finding eleve nettoyeur.py:311 : simule une destination
         # qui apparait PENDANT la copie (course inter-volume) - avant le
         # correctif, os.replace l'aurait ecrasee silencieusement.
         import unittest.mock as mock
@@ -1305,7 +1305,7 @@ class OrganizerTestCase(unittest.TestCase):
         # n'est pas le notre.
         import unittest.mock as mock
         self._write("gros.pdf", "contenu original")
-        o = self._organizer()
+        o = self._nettoyeur()
         result = o.plan()
 
         destination = self.target / "Documents" / "PDF" / "gros.pdf"
@@ -1332,7 +1332,7 @@ class OrganizerTestCase(unittest.TestCase):
         self.assertEqual(destination.read_bytes(), b"fichier legitime apparu entre-temps")
 
     def test_plan_skips_symlinks_instead_of_dereferencing_them(self):
-        # Regression finding eleve organizer.py:1105 : un lien symbolique
+        # Regression finding eleve nettoyeur.py:1105 : un lien symbolique
         # vers un fichier hors du dossier Telechargements ne doit jamais etre
         # traite comme un fichier ordinaire (shutil.move deplacerait/
         # supprimerait alors le contenu POINTE, pas juste le lien).
@@ -1344,7 +1344,7 @@ class OrganizerTestCase(unittest.TestCase):
         except OSError:
             self.skipTest("symlinks non supportes sans privilege sur cette machine")
 
-        o = self._organizer()
+        o = self._nettoyeur()
         result = o.plan()
 
         self.assertEqual(result.moves, [])
@@ -1355,14 +1355,14 @@ class OrganizerTestCase(unittest.TestCase):
         self.assertEqual(target_file.read_text(), "contenu externe")
 
     def test_undo_inter_volume_uses_copy_function_and_leaves_no_truncated_file(self):
-        # Regression finding eleve organizer.py:1545 : _attempt_restore_entry
+        # Regression finding eleve nettoyeur.py:1545 : _attempt_restore_entry
         # utilisait shutil.move() nu, sans le copy_function anti-troncature
         # qu'utilise execute() - une annulation inter-volume interrompue en
         # cours de copie aurait pu laisser un fichier tronque a la source
         # d'origine.
         import unittest.mock as mock
         self._write("gros.pdf", "contenu original complet")
-        o = self._organizer()
+        o = self._nettoyeur()
         result = o.plan()
         o.execute(result, simulate=False)
 
@@ -1381,7 +1381,7 @@ class OrganizerTestCase(unittest.TestCase):
 
     def test_undo_with_malformed_history_entry_does_not_crash(self):
         self._write("a.pdf")
-        o = self._organizer()
+        o = self._nettoyeur()
         result = o.plan()
         batch = o.execute(result, simulate=False)
         # Simule une entree d'historique corrompue (edition manuelle) a
@@ -1396,7 +1396,7 @@ class OrganizerTestCase(unittest.TestCase):
 
     def test_undo_retries_after_conflict_is_resolved(self):
         self._write("a.pdf", "original")
-        o = self._organizer()
+        o = self._nettoyeur()
         result = o.plan()
         o.execute(result, simulate=False)
 
@@ -1418,7 +1418,7 @@ class OrganizerTestCase(unittest.TestCase):
 
     def test_export_html_report_creates_readable_file(self):
         self._write("a.pdf")
-        o = self._organizer()
+        o = self._nettoyeur()
         result = o.plan()
         batch = o.execute(result, simulate=False)
 
@@ -1456,7 +1456,7 @@ class OrganizerTestCase(unittest.TestCase):
         # absolu (C:\Users\<nom_utilisateur>\...) reveler ait le nom du
         # compte Windows sans que ce soit utile au rapport.
         self._write("a.pdf")
-        o = self._organizer()
+        o = self._nettoyeur()
         result = o.plan()
         batch = o.execute(result, simulate=False)
 
@@ -1471,7 +1471,7 @@ class OrganizerTestCase(unittest.TestCase):
         # le libelle doit refleter le vrai statut de chaque entree,
         # y compris pour un lot re-exporte depuis le detail de l'historique.
         self._write("a.pdf")
-        o = self._organizer()
+        o = self._nettoyeur()
         batch = o.execute(o.plan(), simulate=True)
         report_path = self.tmp / "rapport_simule.html"
         org.export_html_report(batch, report_path)
@@ -1481,7 +1481,7 @@ class OrganizerTestCase(unittest.TestCase):
 
     def test_export_html_report_reflects_real_status_of_an_undone_batch(self):
         self._write("a.pdf", "contenu")
-        o = self._organizer()
+        o = self._nettoyeur()
         o.execute(o.plan(), simulate=False)
         o.undo_last_batch()
         history = org.load_history()
@@ -1518,7 +1518,7 @@ class OrganizerTestCase(unittest.TestCase):
         stale.write_text("x" * 2048)
         self._age_file(stale, 200)
 
-        o = self._organizer()
+        o = self._nettoyeur()
         result = o.scan_stale_review_folders()
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0]["folder"], org.OLD_FILES_TARGET)
@@ -1532,7 +1532,7 @@ class OrganizerTestCase(unittest.TestCase):
         stale.write_text("x")
         self._age_file(stale, 400)
 
-        o = self._organizer()
+        o = self._nettoyeur()
         result = o.scan_stale_review_folders()
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0]["folder"], org.DUPLICATES_TARGET)
@@ -1544,12 +1544,12 @@ class OrganizerTestCase(unittest.TestCase):
         recent.write_text("x")
         # Pas de _age_file : mtime reste "maintenant", bien sous le seuil.
 
-        o = self._organizer()
+        o = self._nettoyeur()
         result = o.scan_stale_review_folders()
         self.assertEqual(result, [])
 
     def test_scan_stale_review_folders_returns_empty_list_when_folders_absent(self):
-        o = self._organizer()
+        o = self._nettoyeur()
         result = o.scan_stale_review_folders()
         self.assertEqual(result, [])
 
@@ -1560,11 +1560,11 @@ class OrganizerTestCase(unittest.TestCase):
         stale.write_text("x")
         self._age_file(stale, 10)
 
-        o = self._organizer(old_file_threshold_days=5)
+        o = self._nettoyeur(old_file_threshold_days=5)
         result = o.scan_stale_review_folders()
         self.assertEqual(len(result), 1)
 
-        o_high_threshold = self._organizer(old_file_threshold_days=365)
+        o_high_threshold = self._nettoyeur(old_file_threshold_days=365)
         self.assertEqual(o_high_threshold.scan_stale_review_folders(), [])
 
     def test_scan_stale_review_folders_sums_both_folders_independently(self):
@@ -1577,7 +1577,7 @@ class OrganizerTestCase(unittest.TestCase):
             f.write_text("x")
             self._age_file(f, 150)
 
-        o = self._organizer()
+        o = self._nettoyeur()
         result = {entry["folder"]: entry["count"] for entry in o.scan_stale_review_folders()}
         self.assertEqual(result[org.OLD_FILES_TARGET], 2)
         self.assertEqual(result[org.DUPLICATES_TARGET], 1)
@@ -1604,7 +1604,7 @@ class OrganizerTestCase(unittest.TestCase):
         self._write("facture.pdf", content="facture-identique-xyz")
         self._write("facture (1).pdf", content="facture-identique-xyz")
 
-        o = self._organizer()
+        o = self._nettoyeur()
         result = o.plan()
         categories = sorted(m.category for m in result.moves)
         # 5 images uniques + 1 PDF garde + 1 PDF doublon.
@@ -1629,7 +1629,7 @@ class OrganizerTestCase(unittest.TestCase):
         (self.downloads / "a.pdf").write_bytes(content_a)
         (self.downloads / "b.pdf").write_bytes(content_b)
 
-        o = self._organizer()
+        o = self._nettoyeur()
         result = o.plan()
         self.assertEqual(len(result.moves), 2)
         self.assertTrue(all(m.category == "PDF" for m in result.moves))
@@ -1641,15 +1641,15 @@ class OrganizerTestCase(unittest.TestCase):
         import unittest.mock as mock
         for index in range(30):
             self._write(f"doc{index}.pdf", content=f"contenu-unique-{index:03d}")
-        o = self._organizer()
-        original_file_hash = org.DownloadOrganizer._file_hash
+        o = self._nettoyeur()
+        original_file_hash = org.Nettoyeur._file_hash
         calls = []
 
         def counting_file_hash(path, cache=None):
             calls.append(path)
             return original_file_hash(path, cache)
 
-        with mock.patch.object(org.DownloadOrganizer, "_file_hash", staticmethod(counting_file_hash)):
+        with mock.patch.object(org.Nettoyeur, "_file_hash", staticmethod(counting_file_hash)):
             o.plan()
         # Aucun de ces 30 fichiers de meme taille n'est un doublon : le
         # pre-filtre par hash partiel doit eliminer tous les candidats avant
@@ -1671,9 +1671,9 @@ class CLIUnicodeEncodingTestCase(unittest.TestCase):
     encoding="cp1252", errors="strict" (le comportement par defaut d'un
     print() non protege).
 
-    N'herite PAS de OrganizerTestCase (contrairement a une premiere version
+    N'herite PAS de NettoyeurTestCase (contrairement a une premiere version
     de ce fichier) : le faire executerait une seconde fois, sous ce nouveau
-    nom de classe, tous les tests deja herites de OrganizerTestCase - une
+    nom de classe, tous les tests deja herites de NettoyeurTestCase - une
     isolation minimale dupliquee ici (meme pattern que HistoryJsonlTestCase
     plus bas) suffit et evite ce doublon."""
 
@@ -1732,7 +1732,7 @@ class CLIUnicodeEncodingTestCase(unittest.TestCase):
             source=emoji_path, destination=self.target / "Documents" / "PDF" / emoji_path.name,
             category="PDF", reason="extension .pdf",
         )
-        result = org.OrganizeResult(moves=[move])
+        result = org.ResultatRangement(moves=[move])
         buffer, narrow_stdout = self._narrow_stdout()
         old_stdout = sys.stdout
         sys.stdout = narrow_stdout
@@ -1749,7 +1749,7 @@ class CLIUnicodeEncodingTestCase(unittest.TestCase):
             source=emoji_path, destination=self.target / "Documents" / "PDF" / emoji_path.name,
             category="PDF", reason="extension .pdf",
         )
-        result = org.OrganizeResult(moves=[move])
+        result = org.ResultatRangement(moves=[move])
         buffer, narrow_stdout = self._narrow_stdout()
         old_stdout = sys.stdout
         sys.stdout = narrow_stdout
@@ -1787,7 +1787,7 @@ class CLIUnicodeEncodingTestCase(unittest.TestCase):
 
     def test_main_cli_simulation_does_not_crash_on_emoji_filename(self):
         # Reproduction bout-en-bout du crash CLI original (A12) : "python
-        # organizer.py" en mode simulation, sur un dossier contenant un
+        # nettoyeur.py" en mode simulation, sur un dossier contenant un
         # fichier dont le nom contient un emoji, avec une console dont
         # l'encodage de sortie ne supporte pas les emojis. Avant correctif,
         # ceci levait un UnicodeEncodeError non intercepte et un code de

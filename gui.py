@@ -26,7 +26,7 @@ RELEASES_URL = f"https://github.com/{UPDATE_REPO}/releases/latest"
 # dans la barre des taches/l'epinglage sous une icone/processus generique
 # Python plutot que sous sa propre icone dediee. Doit etre defini AVANT la
 # creation de toute fenetre (voir _set_app_user_model_id, appele en tout
-# debut de OrganizerGUI.__init__).
+# debut de NettoyeurGUI.__init__).
 APP_USER_MODEL_ID = "Yoshines.NettoyeurTelechargements.GUI.1"
 
 
@@ -66,8 +66,8 @@ def _resolve_icon_path() -> "Path | None":
 import opl_theme
 import opl_contact
 import update_checker
-from organizer import (
-    DownloadOrganizer,
+from nettoyeur import (
+    Nettoyeur,
     load_config,
     save_config,
     export_config,
@@ -187,7 +187,7 @@ class _TreeviewCellTooltip:
         self._last_key = None
 
 
-class OrganizerGUI(tk.Tk):
+class NettoyeurGUI(tk.Tk):
     def __init__(self):
         # Avant toute creation de fenetre (audit D8/E1) : voir la docstring
         # de _set_app_user_model_id pour la raison de cet ordre.
@@ -211,7 +211,7 @@ class OrganizerGUI(tk.Tk):
 
 
         self.config_data = load_config()
-        self.organizer = DownloadOrganizer(self.config_data)
+        self.nettoyeur = Nettoyeur(self.config_data)
         self.last_real_batch = None
 
         # Etat du mode Veille : jamais active automatiquement au demarrage,
@@ -710,10 +710,10 @@ class OrganizerGUI(tk.Tk):
         peuvent prendre plusieurs secondes sur de gros volumes, domines
         par la detection de doublons).
 
-        Aucun widget ni etat partage (self.organizer, self.last_real_batch,
+        Aucun widget ni etat partage (self.nettoyeur, self.last_real_batch,
         la config...) n'est touche depuis le thread de fond : `work` ne
         doit lire/ecrire que des objets qui lui sont propres (voir les
-        organizers "snapshot", construits a partir d'une copie profonde de
+        nettoyeurs "snapshot", construits a partir d'une copie profonde de
         la config, utilises par _simulate/_run_real/_watch_tick) ; seul
         on_success/on_error, execute sur le thread principal apres depot
         du resultat dans la queue, a le droit d'appliquer quoi que ce soit
@@ -728,7 +728,7 @@ class OrganizerGUI(tk.Tk):
 
         `progress_queue`/`on_progress` (correctif audit B2) : si les deux
         sont fournis, chaque tuple depose dans `progress_queue` par `work`
-        (execute sur le thread de fond - voir DownloadOrganizer.plan()/
+        (execute sur le thread de fond - voir Nettoyeur.plan()/
         execute(progress_callback=...)) est relaye a `on_progress(*tuple)`
         sur le thread PRINCIPAL, a chaque tick de polling. Seul le DERNIER
         tuple depose depuis le tick precedent est relaye (la queue est
@@ -859,7 +859,7 @@ class OrganizerGUI(tk.Tk):
         if config is None:
             return
         save_config(config)
-        self.organizer = DownloadOrganizer(config)
+        self.nettoyeur = Nettoyeur(config)
         self.status_var.set("Configuration enregistree.")
 
     def _apply_config_to_ui(self, config: dict) -> None:
@@ -875,7 +875,7 @@ class OrganizerGUI(tk.Tk):
         self._refresh_categories_tree()
         self.check_updates_var.set(bool(config.get("check_for_updates", True)))
         self.config_data = config
-        self.organizer = DownloadOrganizer(config)
+        self.nettoyeur = Nettoyeur(config)
 
     def _refresh_categories_tree(self):
         self.categories_tree.delete(*self.categories_tree.get_children())
@@ -930,7 +930,7 @@ class OrganizerGUI(tk.Tk):
         if config is None:
             return
         path = filedialog.asksaveasfilename(
-            title="Exporter la configuration", initialfile="download_organizer_config.json",
+            title="Exporter la configuration", initialfile="nettoyeur_config.json",
             defaultextension=".json", filetypes=[("Fichier JSON", "*.json")],
         )
         if not path:
@@ -1037,8 +1037,8 @@ class OrganizerGUI(tk.Tk):
         # sans les enregistrer definitivement. Utilisez "Enregistrer la
         # configuration" ou "Ranger les fichiers" pour persister.
         #
-        # Important : on utilise un organizer temporaire, construit a partir
-        # d'une COPIE PROFONDE de la config, sans toucher a self.organizer.
+        # Important : on utilise un nettoyeur temporaire, construit a partir
+        # d'une COPIE PROFONDE de la config, sans toucher a self.nettoyeur.
         # Si le Mode Veille tourne en arriere-plan, il continue d'utiliser la
         # configuration active (sauvegardee) - un simple "Simuler" ne doit
         # jamais changer silencieusement son comportement. La copie profonde
@@ -1047,7 +1047,7 @@ class OrganizerGUI(tk.Tk):
         # self.config_data, que le thread principal pourrait muter entre
         # temps (Ctrl+S, Activer la veille...) pendant que le calcul tourne
         # encore - une mutation d'etat partage non synchronisee.
-        preview_organizer = DownloadOrganizer(copy.deepcopy(config))
+        nettoyeur_apercu = Nettoyeur(copy.deepcopy(config))
 
         self._set_busy(True, "Simulation en cours...")
 
@@ -1060,11 +1060,11 @@ class OrganizerGUI(tk.Tk):
         progress_queue: "queue.Queue" = queue.Queue()
 
         def work():
-            result = preview_organizer.plan(
+            result = nettoyeur_apercu.plan(
                 progress_callback=lambda done, total: progress_queue.put(("Analyse", done, total))
             )
             if not result.errors:
-                preview_organizer.execute(
+                nettoyeur_apercu.execute(
                     result, simulate=True,
                     progress_callback=lambda done, total: progress_queue.put(("Simulation du rangement", done, total)),
                 )
@@ -1127,11 +1127,11 @@ class OrganizerGUI(tk.Tk):
         save_config(config)
         # Snapshot isole (copie profonde de la config) pour le thread de
         # fond, meme raison que dans _simulate : le thread ne doit jamais
-        # partager de dict mutable avec self.config_data. self.organizer
+        # partager de dict mutable avec self.config_data. self.nettoyeur
         # n'est reaffecte que depuis le thread PRINCIPAL, une fois le
         # traitement entierement termine (voir on_execute_success) - jamais
         # depuis le thread de fond.
-        worker_organizer = DownloadOrganizer(copy.deepcopy(config))
+        nettoyeur_fond = Nettoyeur(copy.deepcopy(config))
 
         self._set_busy(True, "Analyse en cours...")
 
@@ -1142,7 +1142,7 @@ class OrganizerGUI(tk.Tk):
         plan_progress_queue: "queue.Queue" = queue.Queue()
 
         def plan_work():
-            return worker_organizer.plan(
+            return nettoyeur_fond.plan(
                 progress_callback=lambda done, total: plan_progress_queue.put((done, total))
             )
 
@@ -1190,7 +1190,7 @@ class OrganizerGUI(tk.Tk):
             execute_progress_queue: "queue.Queue" = queue.Queue()
 
             def execute_work():
-                return worker_organizer.execute(
+                return nettoyeur_fond.execute(
                     result, simulate=False,
                     progress_callback=lambda done, total: execute_progress_queue.put((done, total)),
                 )
@@ -1200,7 +1200,7 @@ class OrganizerGUI(tk.Tk):
 
             def on_execute_success(batch):
                 self._set_busy(False)
-                self.organizer = worker_organizer
+                self.nettoyeur = nettoyeur_fond
                 errors = [m for m in batch["moves"] if m["status"] == "erreur"]
                 moved = [m for m in batch["moves"] if m["status"] == "deplace"]
                 self.last_real_batch = batch
@@ -1300,7 +1300,7 @@ class OrganizerGUI(tk.Tk):
             return
         config["watch_interval_seconds"] = interval
         save_config(config)
-        self.organizer = DownloadOrganizer(config)
+        self.nettoyeur = Nettoyeur(config)
 
         self.watch_active = True
         self._watch_last_signature = None
@@ -1344,13 +1344,13 @@ class OrganizerGUI(tk.Tk):
         self._watch_busy = True
         # Snapshot isole (copie profonde de la config), meme raison que dans
         # _simulate/_run_real : le thread de fond ne doit jamais lire
-        # self.organizer.config en direct, potentiellement mute entre-temps
+        # self.nettoyeur.config en direct, potentiellement mute entre-temps
         # par une autre action sur le thread principal (Ctrl+S, "Ranger les
         # fichiers"...).
-        worker_organizer = DownloadOrganizer(copy.deepcopy(self.organizer.config))
+        nettoyeur_fond = Nettoyeur(copy.deepcopy(self.nettoyeur.config))
 
         def work():
-            return worker_organizer.plan()
+            return nettoyeur_fond.plan()
 
         def on_success(result):
             self._watch_busy = False
@@ -1378,7 +1378,7 @@ class OrganizerGUI(tk.Tk):
 
             if result.moves and signature == self._watch_last_signature:
                 self._watch_last_signature = None
-                self._prompt_watch_batch(worker_organizer, result)
+                self._prompt_watch_batch(nettoyeur_fond, result)
             else:
                 self._watch_last_signature = signature
                 if result.moves:
@@ -1414,10 +1414,10 @@ class OrganizerGUI(tk.Tk):
         except ValueError:
             # Champ modifie en cours de route avec une valeur invalide : on
             # garde la derniere cadence connue plutot que d'interrompre la veille.
-            interval = self.organizer.config.get("watch_interval_seconds", DEFAULT_WATCH_INTERVAL_SECONDS)
+            interval = self.nettoyeur.config.get("watch_interval_seconds", DEFAULT_WATCH_INTERVAL_SECONDS)
         self._watch_after_id = self.after(interval * 1000, self._watch_tick)
 
-    def _prompt_watch_batch(self, worker_organizer, result):
+    def _prompt_watch_batch(self, nettoyeur_fond, result):
         self._fill_preview(result)
         duplicates = [m for m in result.moves if m.category == DUPLICATES_TARGET]
         dup_line = f"Dont {len(duplicates)} doublon(s) de contenu identique.\n" if duplicates else ""
@@ -1438,7 +1438,7 @@ class OrganizerGUI(tk.Tk):
         self._watch_busy = True
 
         def work():
-            return worker_organizer.execute(result, simulate=False)
+            return nettoyeur_fond.execute(result, simulate=False)
 
         def on_success(batch):
             self._watch_busy = False
@@ -1446,8 +1446,8 @@ class OrganizerGUI(tk.Tk):
                 return
             # Le traitement (plan() + execute()) est entierement termine :
             # c'est le seul moment ou le thread principal reaffecte
-            # self.organizer, jamais le thread de fond lui-meme.
-            self.organizer = worker_organizer
+            # self.nettoyeur, jamais le thread de fond lui-meme.
+            self.nettoyeur = nettoyeur_fond
             errors = [m for m in batch["moves"] if m["status"] == "erreur"]
             moved = [m for m in batch["moves"] if m["status"] == "deplace"]
             self.last_real_batch = batch
@@ -1488,7 +1488,7 @@ class OrganizerGUI(tk.Tk):
         accumulent des fichiers plus vieux que le seuil configure.
 
         Le scan (parcours recursif + stat() de chaque fichier, voir
-        organizer.scan_stale_review_folders) peut prendre plusieurs
+        nettoyeur.scan_stale_review_folders) peut prendre plusieurs
         secondes si ces dossiers contiennent des milliers de fichiers :
         execute directement ici, il gelait tout le thread principal Tk
         (donc toute l'appli) au demarrage le temps du scan (bug trouve a
@@ -1500,12 +1500,12 @@ class OrganizerGUI(tk.Tk):
         # consomme : plus rien n'est en attente tant que le polling
         # ci-dessous n'a pas reprogramme sa propre echeance.
         self._stale_review_after_id = None
-        organizer = self.organizer
+        nettoyeur = self.nettoyeur
         result_queue: "queue.Queue" = queue.Queue()
 
         def worker():
             try:
-                stale = organizer.scan_stale_review_folders()
+                stale = nettoyeur.scan_stale_review_folders()
             except Exception:  # noqa: BLE001 - garde-fou du thread de fond :
                 # une exception non attrapee ici tuerait le thread sans
                 # jamais rien deposer dans la queue, ce qui laisserait le
@@ -1593,7 +1593,7 @@ class OrganizerGUI(tk.Tk):
         if not confirm:
             return
 
-        out = self.organizer.undo_last_batch()
+        out = self.nettoyeur.undo_last_batch()
         self._show_undo_outcome(out)
 
     def _show_undo_outcome(self, out: dict):
@@ -1642,7 +1642,7 @@ class OrganizerGUI(tk.Tk):
         # (voir _refresh_history_view) : les cas invalides (lot simule, deja
         # annule, purge entre-temps) sont refuses par undo_batch_at avec un
         # message, jamais traites silencieusement.
-        out = self.organizer.undo_batch_at(int(selection[0]))
+        out = self.nettoyeur.undo_batch_at(int(selection[0]))
         self._show_undo_outcome(out)
 
     def _show_batch_detail(self):
@@ -1805,7 +1805,7 @@ class OrganizerGUI(tk.Tk):
                 return
             sources = [moved_entries[i]["source"] for i in selected_indices]
             dialog.destroy()
-            out = self.organizer.undo_selected_files(sources)
+            out = self.nettoyeur.undo_selected_files(sources)
             undone = out.get("undone", [])
             errors = out.get("errors", [])
             if undone:
@@ -1933,7 +1933,7 @@ class OrganizerGUI(tk.Tk):
 
 
 def run_gui():
-    app = OrganizerGUI()
+    app = NettoyeurGUI()
     app.mainloop()
 
 

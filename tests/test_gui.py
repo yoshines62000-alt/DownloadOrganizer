@@ -1,6 +1,6 @@
 """Tests de regression pour gui.py (interface graphique Tkinter).
 
-Ces tests pilotent une VRAIE fenetre OrganizerGUI (vrai Tk, vrais widgets) :
+Ces tests pilotent une VRAIE fenetre NettoyeurGUI (vrai Tk, vrais widgets) :
 seuls tkinter.messagebox/filedialog/simpledialog sont mockes quand
 necessaire, jamais la logique metier elle-meme - meme convention que le
 reste de cette suite de projets.
@@ -17,7 +17,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import organizer as org
+import nettoyeur as org
 import opl_theme
 import gui
 
@@ -76,7 +76,7 @@ class GuiTestCase(unittest.TestCase):
         self.addCleanup(self._cleanup)
 
         # Isole completement les tests du vrai ~/.download_organizer de
-        # l'utilisateur (meme technique que tests/test_organizer.py).
+        # l'utilisateur (meme technique que tests/test_nettoyeur.py).
         self._orig_app_dir = org.APP_DIR
         self._orig_history_file = org.HISTORY_FILE
         self._orig_config_file = org.CONFIG_FILE
@@ -99,7 +99,7 @@ class GuiTestCase(unittest.TestCase):
         cfg["base_target_dir"] = str(self.target)
         org.save_config(cfg)
 
-        self.app = gui.OrganizerGUI()
+        self.app = gui.NettoyeurGUI()
         self.addCleanup(self._destroy_app)
         # __init__ programme deja une verification automatique des dossiers
         # "A verifier"/"Doublons" 200ms apres le demarrage (voir
@@ -198,7 +198,7 @@ class GuiTestCase(unittest.TestCase):
         org.save_config(cfg)
 
         with mock.patch.object(gui.update_checker, "start_update_check") as mocked_start:
-            app2 = gui.OrganizerGUI()
+            app2 = gui.NettoyeurGUI()
             try:
                 mocked_start.assert_not_called()
                 self.assertIn("desactivee", app2.update_status_var.get().lower())
@@ -215,7 +215,7 @@ class GuiTestCase(unittest.TestCase):
         stale_file.write_text("x" * 2048)
         self._age_file(stale_file, 200)
 
-        original_scan = org.DownloadOrganizer.scan_stale_review_folders
+        original_scan = org.Nettoyeur.scan_stale_review_folders
 
         def slow_scan(self_org, *args, **kwargs):
             time.sleep(0.5)
@@ -227,7 +227,7 @@ class GuiTestCase(unittest.TestCase):
             shown["title"] = title
             shown["message"] = message
 
-        with mock.patch.object(org.DownloadOrganizer, "scan_stale_review_folders", slow_scan), \
+        with mock.patch.object(org.Nettoyeur, "scan_stale_review_folders", slow_scan), \
                 mock.patch.object(gui.opl_theme, "message", side_effect=fake_showinfo):
             start = time.perf_counter()
             self.app._check_stale_review_folders()
@@ -269,7 +269,7 @@ class GuiTestCase(unittest.TestCase):
         def failing_scan(self_org, *args, **kwargs):
             raise RuntimeError("panne simulee")
 
-        with mock.patch.object(org.DownloadOrganizer, "scan_stale_review_folders", failing_scan), \
+        with mock.patch.object(org.Nettoyeur, "scan_stale_review_folders", failing_scan), \
                 mock.patch.object(gui.opl_theme, "message") as mocked_showinfo:
             self.app._check_stale_review_folders()
             deadline = time.time() + 1.5
@@ -284,11 +284,11 @@ class GuiTestCase(unittest.TestCase):
     # -- queue.Queue + after()) que le scan des dossiers "A verifier" ------
 
     def _make_slow_plan(self, delay: float = 0.5):
-        """Remplace DownloadOrganizer.plan par une version qui dort `delay`
+        """Remplace Nettoyeur.plan par une version qui dort `delay`
         secondes avant de deleguer au vrai plan() - simule le gel de ~20s
         mesure a l'audit sur un gros volume de fichiers, sans avoir a
         generer reellement des milliers de fichiers dans chaque test."""
-        original_plan = org.DownloadOrganizer.plan
+        original_plan = org.Nettoyeur.plan
 
         def slow_plan(self_org, *args, **kwargs):
             time.sleep(delay)
@@ -306,7 +306,7 @@ class GuiTestCase(unittest.TestCase):
     def test_simulate_does_not_block_the_ui_thread_and_disables_buttons_while_running(self):
         (self.downloads / "photo.jpg").write_bytes(b"x" * 100)
 
-        with mock.patch.object(org.DownloadOrganizer, "plan", self._make_slow_plan(0.5)), \
+        with mock.patch.object(org.Nettoyeur, "plan", self._make_slow_plan(0.5)), \
                 mock.patch.object(gui.opl_theme, "message") as mocked_messagebox:
             start = time.perf_counter()
             self.app._simulate()
@@ -337,14 +337,14 @@ class GuiTestCase(unittest.TestCase):
     def test_simulate_ignores_a_second_trigger_while_already_running(self):
         (self.downloads / "photo.jpg").write_bytes(b"x" * 100)
         call_count = {"n": 0}
-        original_plan = org.DownloadOrganizer.plan
+        original_plan = org.Nettoyeur.plan
 
         def counting_slow_plan(self_org, *args, **kwargs):
             call_count["n"] += 1
             time.sleep(0.4)
             return original_plan(self_org, *args, **kwargs)
 
-        with mock.patch.object(org.DownloadOrganizer, "plan", counting_slow_plan), \
+        with mock.patch.object(org.Nettoyeur, "plan", counting_slow_plan), \
                 mock.patch.object(gui, "messagebox"):
             self.app._simulate()
             # Simule un second declenchement (double-clic, ou raccourci F5)
@@ -358,7 +358,7 @@ class GuiTestCase(unittest.TestCase):
     def test_run_real_does_not_block_the_ui_thread_and_moves_files_via_background_thread(self):
         (self.downloads / "photo.jpg").write_bytes(b"x" * 100)
 
-        with mock.patch.object(org.DownloadOrganizer, "plan", self._make_slow_plan(0.5)), \
+        with mock.patch.object(org.Nettoyeur, "plan", self._make_slow_plan(0.5)), \
                 mock.patch.object(gui.opl_theme, "message") as mocked_messagebox,                 mock.patch.object(gui.opl_theme, "dialogue", return_value=True):
             start = time.perf_counter()
             self.app._run_real()
@@ -378,12 +378,12 @@ class GuiTestCase(unittest.TestCase):
         self.assertFalse((self.downloads / "photo.jpg").exists())
         self.assertIsNotNone(self.app.last_real_batch)
         self.assertIn("1 fichier(s) deplace", self.app.status_var.get())
-        # self.organizer n'est reaffecte qu'apres la fin complete du
+        # self.nettoyeur n'est reaffecte qu'apres la fin complete du
         # traitement, depuis le thread principal.
-        self.assertEqual(self.app.organizer.config["downloads_dir"], str(self.downloads))
+        self.assertEqual(self.app.nettoyeur.config["downloads_dir"], str(self.downloads))
 
     def test_watch_tick_does_not_block_the_ui_thread_nor_disable_manual_buttons(self):
-        with mock.patch.object(org.DownloadOrganizer, "plan", self._make_slow_plan(0.5)), \
+        with mock.patch.object(org.Nettoyeur, "plan", self._make_slow_plan(0.5)), \
                 mock.patch.object(gui, "messagebox"):
             self.app.watch_active = True
             self.app._watch_last_signature = None
@@ -410,13 +410,13 @@ class GuiTestCase(unittest.TestCase):
 
     def test_watch_tick_skips_a_cycle_while_a_manual_action_is_running(self):
         call_count = {"n": 0}
-        original_plan = org.DownloadOrganizer.plan
+        original_plan = org.Nettoyeur.plan
 
         def counting_plan(self_org, *args, **kwargs):
             call_count["n"] += 1
             return original_plan(self_org, *args, **kwargs)
 
-        with mock.patch.object(org.DownloadOrganizer, "plan", counting_plan):
+        with mock.patch.object(org.Nettoyeur, "plan", counting_plan):
             self.app._busy = True
             try:
                 self.app.watch_active = True
@@ -441,13 +441,13 @@ class GuiTestCase(unittest.TestCase):
     def test_simulate_is_deferred_while_a_watch_cycle_is_busy(self):
         (self.downloads / "photo.jpg").write_bytes(b"x" * 100)
         call_count = {"n": 0}
-        original_plan = org.DownloadOrganizer.plan
+        original_plan = org.Nettoyeur.plan
 
         def counting_plan(self_org, *args, **kwargs):
             call_count["n"] += 1
             return original_plan(self_org, *args, **kwargs)
 
-        with mock.patch.object(org.DownloadOrganizer, "plan", counting_plan):
+        with mock.patch.object(org.Nettoyeur, "plan", counting_plan):
             self.app._watch_busy = True
             try:
                 self.app._simulate()
@@ -472,13 +472,13 @@ class GuiTestCase(unittest.TestCase):
     def test_run_real_is_deferred_while_a_watch_cycle_is_busy(self):
         (self.downloads / "photo.jpg").write_bytes(b"x" * 100)
         call_count = {"n": 0}
-        original_plan = org.DownloadOrganizer.plan
+        original_plan = org.Nettoyeur.plan
 
         def counting_plan(self_org, *args, **kwargs):
             call_count["n"] += 1
             return original_plan(self_org, *args, **kwargs)
 
-        with mock.patch.object(org.DownloadOrganizer, "plan", counting_plan):
+        with mock.patch.object(org.Nettoyeur, "plan", counting_plan):
             self.app._watch_busy = True
             try:
                 self.app._run_real()
@@ -504,11 +504,11 @@ class GuiTestCase(unittest.TestCase):
         # seul deplacement reel a bien lieu.
         (self.downloads / "photo.jpg").write_bytes(b"x" * 100)
 
-        worker_organizer = org.DownloadOrganizer(copy.deepcopy(self.app.organizer.config))
-        result = worker_organizer.plan()
+        nettoyeur_fond = org.Nettoyeur(copy.deepcopy(self.app.nettoyeur.config))
+        result = nettoyeur_fond.plan()
         self.assertEqual(len(result.moves), 1)
 
-        original_execute = org.DownloadOrganizer.execute
+        original_execute = org.Nettoyeur.execute
         execute_calls = {"n": 0}
 
         def slow_execute(self_org, *args, **kwargs):
@@ -516,21 +516,21 @@ class GuiTestCase(unittest.TestCase):
             time.sleep(0.4)
             return original_execute(self_org, *args, **kwargs)
 
-        original_plan = org.DownloadOrganizer.plan
+        original_plan = org.Nettoyeur.plan
         plan_calls = {"n": 0}
 
         def counting_plan(self_org, *args, **kwargs):
             plan_calls["n"] += 1
             return original_plan(self_org, *args, **kwargs)
 
-        with mock.patch.object(org.DownloadOrganizer, "execute", slow_execute), \
-                mock.patch.object(org.DownloadOrganizer, "plan", counting_plan), \
+        with mock.patch.object(org.Nettoyeur, "execute", slow_execute), \
+                mock.patch.object(org.Nettoyeur, "plan", counting_plan), \
                 mock.patch.object(gui.opl_theme, "message") as mocked_messagebox,                 mock.patch.object(gui.opl_theme, "dialogue", return_value=True):
 
             # Comme le ferait _watch_tick apres confirmation de l'utilisateur :
             # positionne _watch_busy et demarre execute() sur un thread de fond.
             self.app.watch_active = True
-            self.app._prompt_watch_batch(worker_organizer, result)
+            self.app._prompt_watch_batch(nettoyeur_fond, result)
             self.assertTrue(self.app._watch_busy)
 
             # Tentative de declenchement manuel PENDANT que ce lot de veille
@@ -709,7 +709,7 @@ class GuiTestCase(unittest.TestCase):
             destination=self.target / "A verifier" / "facture_suspecte.pdf",
             category="A verifier", reason=long_reason,
         )
-        result = org.OrganizeResult(moves=[move])
+        result = org.ResultatRangement(moves=[move])
         self.app._fill_preview(result)
         self.app.update()
 
@@ -742,7 +742,7 @@ class GuiTestCase(unittest.TestCase):
             source=self.downloads / "a.pdf", destination=self.target / "PDF" / "a.pdf",
             category="PDF", reason="raison suffisamment longue pour ce test de non-regression",
         )
-        result = org.OrganizeResult(moves=[move])
+        result = org.ResultatRangement(moves=[move])
         self.app._fill_preview(result)
         self.app.update()
 
@@ -760,7 +760,7 @@ class GuiTestCase(unittest.TestCase):
             source=self.downloads / "a.pdf", destination=self.target / "PDF" / "a.pdf",
             category="PDF", reason="raison suffisamment longue pour ce test de non-regression",
         )
-        result = org.OrganizeResult(moves=[move])
+        result = org.ResultatRangement(moves=[move])
         self.app._fill_preview(result)
         self.app.update()
 
@@ -923,7 +923,7 @@ class GuiTestCase(unittest.TestCase):
     # -- Recherche/filtre dans les tableaux Apercu et Historique -----------
 
     def _preview_result(self):
-        return org.OrganizeResult(moves=[
+        return org.ResultatRangement(moves=[
             org.PlannedMove(
                 source=self.downloads / "rapport_annuel.pdf",
                 destination=self.target / "PDF" / "rapport_annuel.pdf",

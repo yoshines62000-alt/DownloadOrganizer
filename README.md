@@ -246,21 +246,21 @@ les éventuelles erreurs, utile pour diagnostiquer un problème.
 ### Ligne de commande
 
 ```bash
-python organizer.py --gui   # interface graphique
+python nettoyeur.py --gui   # interface graphique
 python gui.py                # equivalent, directement
 
 # Simulation (aucun fichier modifié)
-python organizer.py
+python nettoyeur.py
 
 # Exécution réelle
-python organizer.py --run
+python nettoyeur.py --run
 
 # Annuler le dernier lot de déplacements réels
-python organizer.py --undo
+python nettoyeur.py --undo
 
 # Spécifier un dossier Téléchargements différent pour cette execution
 # uniquement (non enregistre dans la configuration)
-python organizer.py --downloads-dir "D:\Autre\Telechargements" --run
+python nettoyeur.py --downloads-dir "D:\Autre\Telechargements" --run
 ```
 
 ## Configuration
@@ -320,17 +320,17 @@ ainsi que les cas limites (dossiers manquants/vides, configuration corrompue,
 exclusions mal formées, collisions de destination).
 
 ```bash
-python -m unittest tests.test_organizer -v
+python -m unittest tests.test_nettoyeur -v
 ```
 
 ## Structure du projet
 
 ```
-organizer.py                     # logique métier + CLI
+nettoyeur.py                     # logique métier + CLI
 gui.py                           # interface graphique Tkinter
 update_checker.py                # vérification de mise à jour (API GitHub)
 assets/icon.ico                  # icône de l'application (fenêtre + exécutable)
-tests/test_organizer.py          # tests automatises (logique métier/CLI)
+tests/test_nettoyeur.py          # tests automatises (logique métier/CLI)
 tests/test_gui.py                # tests automatises (interface graphique)
 tests/test_update_checker.py     # tests automatises (vérification de mise à jour)
 Lancer.vbs                       # raccourci de lancement double-clic (sans console)

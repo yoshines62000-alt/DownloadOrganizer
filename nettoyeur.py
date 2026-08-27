@@ -39,6 +39,18 @@ from typing import Callable, Optional
 # Configuration
 # ---------------------------------------------------------------------------
 
+# /!\ NE PAS RENOMMER `.download_organizer` -- ce n'est pas un nom, c'est une
+# CLE DE STOCKAGE. Le depot, le module et les classes sont passes au francais le
+# 2026-08-27 (DownloadOrganizer -> NettoyeurTelechargements) ; ce chemin est
+# reste en arriere DELIBEREMENT. Il porte la configuration de l'utilisateur,
+# l'historique de ses lots et ses rapports. Le suivre aurait fait repartir
+# chaque installation sur un dossier vide -- sans erreur, sans message : l'appli
+# aurait simplement cru etre lancee pour la premiere fois.
+#
+# Le changer un jour est possible, mais alors il faut MIGRER : lire l'ancien
+# dossier s'il existe, le deplacer, et le prouver par un test. Tant que cette
+# migration n'existe pas, cette chaine est figee -- le logger ci-dessous aussi,
+# pour que les deux disent la meme chose.
 APP_DIR = Path.home() / ".download_organizer"
 HISTORY_FILE = APP_DIR / "history.json"
 CONFIG_FILE = APP_DIR / "config.json"
@@ -328,7 +340,7 @@ def _copy_via_temp_file(source: str, destination: str) -> None:
     try:
         shutil.copy2(source, tmp_name)
         # Reverification juste avant le renommage final (audit 2026-07-28,
-        # finding eleve DownloadOrganizer/organizer.py:311) : execute() ne
+        # finding eleve Nettoyeur/nettoyeur.py:311) : execute() ne
         # verifie l'absence de la destination qu'AVANT d'appeler shutil.move,
         # donc avant cette copie. Pour un deplacement inter-volume, la copie
         # ci-dessus peut prendre un temps notable (gros fichier, disque
@@ -796,7 +808,7 @@ class PlannedMove:
 
 
 @dataclass
-class OrganizeResult:
+class ResultatRangement:
     moves: list = field(default_factory=list)        # list[PlannedMove] effectues ou simules
     excluded: list = field(default_factory=list)      # list[Path] ignores (exclusion ou non categorise)
     errors: list = field(default_factory=list)        # list[tuple[Path, str]]
@@ -808,7 +820,7 @@ class OrganizeResult:
 # Logique principale
 # ---------------------------------------------------------------------------
 
-class DownloadOrganizer:
+class Nettoyeur:
     def __init__(self, config: Optional[dict] = None):
         self.config = config or load_config()
         self.categories = get_effective_categories(self.config)
@@ -1043,7 +1055,7 @@ class DownloadOrganizer:
 
     # -- planification -------------------------------------------------
 
-    def plan(self, progress_callback: Optional[Callable[[int, int], None]] = None) -> OrganizeResult:
+    def plan(self, progress_callback: Optional[Callable[[int, int], None]] = None) -> ResultatRangement:
         """`progress_callback(traites, total)`, si fourni, est appele apres
         l'examen de chaque entree du dossier (correctif audit B2 : sur un
         gros volume/un lecteur reseau lent, rien ne distinguait auparavant a
@@ -1053,7 +1065,7 @@ class DownloadOrganizer:
         thread principal Tk s'il execute plan() en arriere-plan."""
         downloads_dir_str = self.config["downloads_dir"].strip() if self.config["downloads_dir"] else ""
         base_target_str = self.config["base_target_dir"].strip() if self.config["base_target_dir"] else ""
-        result = OrganizeResult()
+        result = ResultatRangement()
 
         if not downloads_dir_str:
             result.errors.append((Path("."), "Le dossier Telechargements n'est pas renseigne."))
@@ -1141,7 +1153,7 @@ class DownloadOrganizer:
             # jusqu'ici tel un fichier ordinaire, et shutil.move() aurait pu
             # deplacer/supprimer le contenu POINTE (potentiellement hors du
             # dossier Telechargements) au lieu du simple lien (audit
-            # 2026-07-28, finding eleve organizer.py:1105).
+            # 2026-07-28, finding eleve nettoyeur.py:1105).
             if entry.is_symlink():
                 result.skipped_symlinks.append(entry)
                 continue
@@ -1326,7 +1338,7 @@ class DownloadOrganizer:
 
             by_partial: dict = defaultdict(list)
             for entry in group:
-                partial = DownloadOrganizer._partial_hash(entry, size, partial_hash_cache)
+                partial = Nettoyeur._partial_hash(entry, size, partial_hash_cache)
                 by_partial[partial].append(entry)
 
             for partial_group in by_partial.values():
@@ -1336,7 +1348,7 @@ class DownloadOrganizer:
                     continue
                 seen_hashes: dict = {}
                 for entry in sorted(partial_group, key=lambda p: p.name.lower()):
-                    digest = DownloadOrganizer._file_hash(entry, hash_cache)
+                    digest = Nettoyeur._file_hash(entry, hash_cache)
                     if digest is None:
                         continue
                     if digest in seen_hashes:
@@ -1377,7 +1389,7 @@ class DownloadOrganizer:
 
     def execute(
         self,
-        result: OrganizeResult,
+        result: ResultatRangement,
         simulate: bool = True,
         progress_callback: Optional[Callable[[int, int], None]] = None,
     ) -> dict:
@@ -1593,7 +1605,7 @@ class DownloadOrganizer:
             else:
                 dst.parent.mkdir(parents=True, exist_ok=True)
                 # copy_function=_copy_via_temp_file (audit 2026-07-28, finding
-                # eleve organizer.py:1545) : execute() passe deja ce garde-fou
+                # eleve nettoyeur.py:1545) : execute() passe deja ce garde-fou
                 # anti-troncature a shutil.move (voir plus haut) ; l'annulation
                 # doit beneficier de la meme protection pour un deplacement
                 # inter-volume, sinon un arret brutal pendant la restauration
@@ -1799,7 +1811,7 @@ def _ensure_console_encoding_tolerant() -> None:
             pass
 
 
-def _print_plan(result: OrganizeResult) -> None:
+def _print_plan(result: ResultatRangement) -> None:
     if result.errors:
         for path, err in result.errors:
             print(f"[ERREUR] {path}: {err}")
@@ -1835,10 +1847,10 @@ def main(argv: Optional[list] = None) -> int:
     args = parser.parse_args(argv)
 
     if args.gui:
-        # gui.py fait "from organizer import ...", ce qui re-executerait ce
+        # gui.py fait "from nettoyeur import ...", ce qui re-executerait ce
         # fichier une seconde fois sous un nom de module distinct si on ne
         # reutilise pas l'entree __main__ deja chargee.
-        sys.modules.setdefault("organizer", sys.modules["__main__"])
+        sys.modules.setdefault("nettoyeur", sys.modules["__main__"])
         from gui import run_gui
         run_gui()
         return 0
@@ -1850,10 +1862,10 @@ def main(argv: Optional[list] = None) -> int:
         # durablement le dossier configure dans la GUI.
         config["downloads_dir"] = args.downloads_dir
 
-    organizer = DownloadOrganizer(config)
+    nettoyeur = Nettoyeur(config)
 
     if args.undo:
-        out = organizer.undo_last_batch()
+        out = nettoyeur.undo_last_batch()
         for entry in out["undone"]:
             print(f"[ANNULE] {entry['destination']} -> {entry['source']}")
         for path, err in out.get("errors", []):
@@ -1862,7 +1874,7 @@ def main(argv: Optional[list] = None) -> int:
             print(out.get("message", ""))
         return 0
 
-    result = organizer.plan()
+    result = nettoyeur.plan()
     simulate = not args.run
     print("MODE SIMULATION" if simulate else "MODE REEL (deplacements effectifs)")
     _print_plan(result)
@@ -1871,7 +1883,7 @@ def main(argv: Optional[list] = None) -> int:
         return 1
 
     if result.moves:
-        organizer.execute(result, simulate=simulate)
+        nettoyeur.execute(result, simulate=simulate)
         if not simulate:
             print(f"\n{len(result.moves)} fichier(s) deplace(s). Utilisez --undo pour annuler.")
 
