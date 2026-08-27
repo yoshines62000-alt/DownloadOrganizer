@@ -313,8 +313,7 @@ class GuiTestCase(unittest.TestCase):
         (self.downloads / "photo.jpg").write_bytes(b"x" * 100)
 
         with mock.patch.object(org.DownloadOrganizer, "plan", self._make_slow_plan(0.5)), \
-                mock.patch.object(gui, "messagebox") as mocked_messagebox:
-            mocked_messagebox.askyesno.return_value = True
+                mock.patch.object(gui, "messagebox") as mocked_messagebox,                 mock.patch.object(gui.opl_theme, "dialogue", return_value=True):
             start = time.perf_counter()
             self.app._run_real()
             elapsed = time.perf_counter() - start
@@ -480,8 +479,7 @@ class GuiTestCase(unittest.TestCase):
 
         with mock.patch.object(org.DownloadOrganizer, "execute", slow_execute), \
                 mock.patch.object(org.DownloadOrganizer, "plan", counting_plan), \
-                mock.patch.object(gui, "messagebox") as mocked_messagebox:
-            mocked_messagebox.askyesno.return_value = True
+                mock.patch.object(gui, "messagebox") as mocked_messagebox,                 mock.patch.object(gui.opl_theme, "dialogue", return_value=True):
 
             # Comme le ferait _watch_tick apres confirmation de l'utilisateur :
             # positionne _watch_busy et demarre execute() sur un thread de fond.

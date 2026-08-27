@@ -1152,13 +1152,13 @@ class OrganizerGUI(tk.Tk):
                 f"'{DUPLICATES_TARGET}' (rien n'est jamais supprime).\n"
                 if duplicates else ""
             )
-            confirm = messagebox.askyesno(
-                "Confirmer le rangement",
+            confirm = opl_theme.dialogue(
+                self, "Confirmer le rangement",
                 f"{len(result.moves)} fichier(s) vont etre deplaces (aucune suppression).\n"
                 f"{dup_line}"
                 "Vous pourrez annuler ce lot via le bouton 'Annuler le dernier rangement'.\n\n"
                 "Continuer ?",
-            )
+                confirmer="Ranger ces fichiers")
             if not confirm:
                 return
 
@@ -1235,7 +1235,10 @@ class OrganizerGUI(tk.Tk):
         base_dir = Path(self.base_target_var.get().strip()) if self.base_target_var.get().strip() else None
         export_html_report(self.last_real_batch, path, base_dir=base_dir)
         self.status_var.set(f"Rapport exporte : {path}")
-        if messagebox.askyesno("Rapport exporte", f"Rapport enregistre dans :\n{path}\n\nL'ouvrir maintenant ?"):
+        if opl_theme.dialogue(
+            self, "Rapport exporte",
+            f"Rapport enregistre dans :\n{path}\n\nL'ouvrir maintenant ?",
+            confirmer="Ouvrir le rapport"):
             os.startfile(str(path))
 
     # -- Mode Veille (surveillance optionnelle, sans deplacement automatique) --
@@ -1380,12 +1383,12 @@ class OrganizerGUI(tk.Tk):
         self._fill_preview(result)
         duplicates = [m for m in result.moves if m.category == DUPLICATES_TARGET]
         dup_line = f"Dont {len(duplicates)} doublon(s) de contenu identique.\n" if duplicates else ""
-        confirm = messagebox.askyesno(
-            "Veille : nouveaux fichiers detectes",
+        confirm = opl_theme.dialogue(
+            self, "Veille : nouveaux fichiers detectes",
             f"{len(result.moves)} fichier(s) sont prets a etre ranges (aucune suppression).\n"
             f"{dup_line}"
             "Ranger maintenant ?",
-        )
+            confirmer="Ranger maintenant")
         if not confirm:
             self.watch_status_var.set(
                 "Veille active : rangement ignore pour ce lot. Il sera reproposé au prochain "
@@ -1544,11 +1547,11 @@ class OrganizerGUI(tk.Tk):
             pass
 
     def _undo(self):
-        confirm = messagebox.askyesno(
-            "Annuler le dernier rangement",
+        confirm = opl_theme.dialogue(
+            self, "Annuler le dernier rangement",
             "Voulez-vous vraiment annuler le dernier lot de deplacements reels "
             "(les fichiers seront remis dans le dossier Telechargements) ?",
-        )
+            confirmer="Annuler le rangement")
         if not confirm:
             return
 
@@ -1581,11 +1584,11 @@ class OrganizerGUI(tk.Tk):
         if not selection:
             messagebox.showinfo("Annuler un lot", "Selectionnez d'abord un lot dans l'historique.")
             return
-        confirm = messagebox.askyesno(
-            "Annuler le lot selectionne",
+        confirm = opl_theme.dialogue(
+            self, "Annuler le lot selectionne",
             "Voulez-vous vraiment annuler ce lot de deplacements "
             "(les fichiers seront remis dans le dossier Telechargements) ?",
-        )
+            confirmer="Annuler ce lot")
         if not confirm:
             return
         # L'iid de la ligne EST l'index absolu du lot dans history.json
@@ -1694,7 +1697,10 @@ class OrganizerGUI(tk.Tk):
                 counter += 1
             base_dir = Path(self.base_target_var.get().strip()) if self.base_target_var.get().strip() else None
             export_html_report(batch, path, base_dir=base_dir)
-            if messagebox.askyesno("Rapport exporte", f"Rapport enregistre dans :\n{path}\n\nL'ouvrir maintenant ?", parent=dialog):
+            if opl_theme.dialogue(
+                dialog, "Rapport exporte",
+                f"Rapport enregistre dans :\n{path}\n\nL'ouvrir maintenant ?",
+                confirmer="Ouvrir le rapport"):
                 os.startfile(str(path))
 
         buttons = ttk.Frame(dialog)
@@ -1834,12 +1840,12 @@ class OrganizerGUI(tk.Tk):
         )
         if keep is None:
             return
-        if not messagebox.askyesno(
-            "Purger l'historique",
+        if not opl_theme.dialogue(
+            self, "Purger l'historique",
             f"{total - keep} lot(s) seront definitivement retires de l'historique.\n"
             "Les fichiers deja deplaces sur le disque ne sont pas affectes, mais l'annulation de "
             "ces lots ne sera plus possible depuis l'application. Continuer ?",
-        ):
+            confirmer="Purger l'historique", danger=True):
             return
         removed = purge_history(keep_last=keep)
         self._refresh_history_view()
