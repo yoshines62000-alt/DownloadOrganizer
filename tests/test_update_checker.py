@@ -93,7 +93,7 @@ class TestSlug(unittest.TestCase):
     def test_le_slug_est_le_nom_du_depot_en_minuscules(self):
         # La convention du catalogue d'Open Projects Lab, pour les sept apps.
         self.assertEqual(update_checker.slug_de("yoshines62000-alt/Coffre"), "coffre")
-        self.assertEqual(update_checker.slug_de("yoshines62000-alt/DownloadOrganizer"), "downloadorganizer")
+        self.assertEqual(update_checker.slug_de("yoshines62000-alt/NettoyeurTelechargements"), "nettoyeurtelechargements")
         self.assertEqual(update_checker.slug_de("PhotoTri"), "phototri")
 
 

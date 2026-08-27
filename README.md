@@ -1,9 +1,9 @@
 # Nettoyeur intelligent du dossier Téléchargements
 
-[![Dernière version](https://img.shields.io/github/v/release/yoshines62000-alt/DownloadOrganizer?label=derni%C3%A8re%20version)](https://github.com/yoshines62000-alt/DownloadOrganizer/releases/latest)
-[![Téléchargements](https://img.shields.io/github/downloads/yoshines62000-alt/DownloadOrganizer/total?label=t%C3%A9l%C3%A9chargements)](https://github.com/yoshines62000-alt/DownloadOrganizer/releases/latest)
+[![Dernière version](https://img.shields.io/github/v/release/yoshines62000-alt/NettoyeurTelechargements?label=derni%C3%A8re%20version)](https://github.com/yoshines62000-alt/NettoyeurTelechargements/releases/latest)
+[![Téléchargements](https://img.shields.io/github/downloads/yoshines62000-alt/NettoyeurTelechargements/total?label=t%C3%A9l%C3%A9chargements)](https://github.com/yoshines62000-alt/NettoyeurTelechargements/releases/latest)
 
-**[⬇️ Télécharger l'exécutable (.exe) — aucune installation requise](https://github.com/yoshines62000-alt/DownloadOrganizer/releases/latest)**
+**[⬇️ Télécharger l'exécutable (.exe) — aucune installation requise](https://github.com/yoshines62000-alt/NettoyeurTelechargements/releases/latest)**
 
 Outil qui analyse le dossier `Téléchargements` et range automatiquement les
 fichiers par catégorie :
@@ -22,7 +22,7 @@ tous réversibles.
 
 ## Démarrage rapide
 
-1. [**Téléchargez `NettoyeurTelechargements.exe`**](https://github.com/yoshines62000-alt/DownloadOrganizer/releases/latest)
+1. [**Téléchargez `NettoyeurTelechargements.exe`**](https://github.com/yoshines62000-alt/NettoyeurTelechargements/releases/latest)
    depuis la dernière release.
 2. Double-cliquez dessus : la fenêtre de l'application s'ouvre directement,
    sans installation, sans Python, sans console.
@@ -47,7 +47,7 @@ Get-FileHash .\NettoyeurTelechargements.exe -Algorithm SHA256
 ```
 
 Comparez la valeur `Hash` affichée avec celle indiquée dans les notes de la
-[release correspondante](https://github.com/yoshines62000-alt/DownloadOrganizer/releases).
+[release correspondante](https://github.com/yoshines62000-alt/NettoyeurTelechargements/releases).
 Si les deux empreintes ne correspondent pas exactement, ne lancez pas le
 fichier et retéléchargez-le depuis la page officielle des releases.
 
@@ -219,8 +219,8 @@ dans les installations standard de Python sous Windows) — aucune autre
 dépendance.
 
 ```bash
-git clone https://github.com/yoshines62000-alt/DownloadOrganizer.git
-cd DownloadOrganizer
+git clone https://github.com/yoshines62000-alt/NettoyeurTelechargements.git
+cd NettoyeurTelechargements
 ```
 
 ### Raccourci double-clic

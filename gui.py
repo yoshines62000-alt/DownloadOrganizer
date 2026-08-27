@@ -18,7 +18,7 @@ from pathlib import Path
 
 DONATE_URL = "https://ko-fi.com/yoshines62000"
 APP_VERSION = "1.1.1"
-UPDATE_REPO = "yoshines62000-alt/DownloadOrganizer"
+UPDATE_REPO = "yoshines62000-alt/NettoyeurTelechargements"
 RELEASES_URL = f"https://github.com/{UPDATE_REPO}/releases/latest"
 
 # Identifiant unique de l'application aupres de Windows (audit D8/E1) : sans
@@ -193,7 +193,7 @@ class OrganizerGUI(tk.Tk):
         # de _set_app_user_model_id pour la raison de cet ordre.
         _set_app_user_model_id()
         super().__init__()
-        opl_theme.apply(self, "DownloadOrganizer")
+        opl_theme.apply(self, "Nettoyeur intelligent")
         self.title("Nettoyeur intelligent - Telechargements")
         self._apply_window_icon()
         # Taille par defaut mesuree empiriquement pour que les boutons
@@ -415,7 +415,7 @@ class OrganizerGUI(tk.Tk):
         notebook = opl_theme.entete(
             self, "Nettoyeur intelligent", "Rangement des telechargements",
             on_contact=lambda: opl_contact.ouvrir(self, app="Nettoyeur intelligent", version=APP_VERSION),
-            slug="downloadorganizer", version=APP_VERSION)
+            slug="nettoyeurtelechargements", version=APP_VERSION)
         notebook.pack(fill="both", expand=True, padx=10, pady=10)
         # Conserve en attribut d'instance (audit K3) : sans cela, il etait
         # impossible d'acceder au Notebook (ex: changer d'onglet
